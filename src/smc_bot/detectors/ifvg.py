@@ -21,7 +21,7 @@ Entry: Market order on the candle that creates the IFVG (body-close beyond FVG).
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import Enum
 from typing import Optional
 
@@ -93,10 +93,6 @@ class IFVGDetector:
             else IFVGDirection.BEARISH
         )
 
-        # FVG must have formed on the manipulation leg — not before it.
-        # This mirrors the LEG_LOOKBACK_MIN in ConfluenceEngine._collect_leg_fvgs().
-        max_fvg_age = timedelta(minutes=90)
-
         for tf in TF_PRIORITY:
             fvgs = leg_fvgs.get(tf, [])
             for fvg in fvgs:
@@ -104,10 +100,6 @@ class IFVGDetector:
                     continue
                 if fvg.mitigated:
                     continue
-                # Guard: FVG must be from the leg, not hours before the sweep
-                if fvg.ts < sweep.ts - max_fvg_age:
-                    continue
-
                 if self._is_inversed(candle, fvg, ifvg_direction):
                     return IFVG(
                         source_fvg=fvg,

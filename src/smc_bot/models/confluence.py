@@ -98,6 +98,12 @@ class ConfluenceEngine:
                     continue
             self._swept_levels[price_key] = now
 
+            # Anchor the manipulation leg to the prior opposing swing point.
+            # This defines EXACTLY which FVGs belong to the leg vs older moves.
+            leg_start = self._find_leg_start(sweep, swings_nq or [])
+            if leg_start:
+                sweep.leg_start_ts = leg_start
+
             setup = self._create_setup(sweep, now)
             self._active_setups.append(setup)
             # Collect FVGs from the sweep leg across all tracked TFs
@@ -146,25 +152,49 @@ class ConfluenceEngine:
             expires_ts=now + timedelta(minutes=self.setup_expiry_minutes),
         )
 
-    # How far back (in minutes) to look for FVGs on the manipulation leg.
-    # The leg is the move that creates the sweep — typically 30–90 min on LTF.
-    # Anything older than this is from a previous move, not the current leg.
-    LEG_LOOKBACK_MIN = 90
-
     def _collect_leg_fvgs(
         self, sweep: Sweep, candles_by_tf: dict[int, list[Candle]]
     ) -> dict[int, list[FVG]]:
-        """FVGs that formed ON the manipulation leg — within LEG_LOOKBACK_MIN before the sweep."""
-        from datetime import timedelta
-        leg_start = sweep.ts - timedelta(minutes=self.LEG_LOOKBACK_MIN)
+        """FVGs that formed ON the manipulation leg.
+
+        The leg runs from the most recent opposing swing point up to (and including)
+        the sweep candle. If no swing start is known (leg_start_ts is None), we fall
+        back to all unmitigated FVGs before the sweep — but that should be rare since
+        _find_leg_start() is called whenever swings are available.
+        """
         result: dict[int, list[FVG]] = {}
         for tf, tracker in self.fvg_trackers.items():
             leg = [
                 fvg for fvg in tracker.active
-                if leg_start <= fvg.ts <= sweep.ts and not fvg.mitigated
+                if fvg.ts <= sweep.ts
+                and not fvg.mitigated
+                and (sweep.leg_start_ts is None or fvg.ts >= sweep.leg_start_ts)
             ]
             result[tf] = leg
         return result
+
+    def _find_leg_start(
+        self, sweep: Sweep, swings: list["SwingPoint"]
+    ) -> Optional[datetime]:
+        """
+        Manipulation leg starts at the most recent opposing swing before the sweep.
+        - Bullish sweep (swept a low) → leg descended FROM a prior swing HIGH
+        - Bearish sweep (swept a high) → leg ascended FROM a prior swing LOW
+        Returns the timestamp of that swing, or None if no swings are available.
+        """
+        from ..detectors.swing import SwingType
+
+        if not swings:
+            return None
+
+        target_kind = (
+            SwingType.HIGH if sweep.direction.value == "bullish"
+            else SwingType.LOW
+        )
+        candidates = [s for s in swings if s.kind == target_kind and s.ts < sweep.ts]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda s: s.ts).ts
 
     def _update_leg_fvgs(self, setup: Setup, candles_by_tf: dict[int, list[Candle]]) -> None:
         """Add FVGs that formed AT the sweep candle itself (same 1-min bar) to the leg.
