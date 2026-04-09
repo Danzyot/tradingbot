@@ -268,9 +268,13 @@ class ConfluenceEngine:
         candles_by_tf: dict[int, list[Candle]], now: datetime
     ) -> Optional[Signal]:
         """Model 2: sweep → CISD → FVG retest entry at CE."""
-        # Step 1: CISD
+        # Step 1: CISD — must occur AFTER the sweep candle
         ltf_candles = candles_by_tf.get(1, []) or candles_by_tf.get(5, [])
-        cisd = self.cisd_detector.detect(ltf_candles)
+        # Only look at candles from the sweep timestamp onward
+        post_sweep_candles = [c for c in ltf_candles if c.ts >= setup.sweep.ts]
+        if len(post_sweep_candles) < 2:
+            return None
+        cisd = self.cisd_detector.detect(post_sweep_candles)
         if not cisd:
             return None
         if cisd.direction.value != setup.direction.value:
