@@ -276,21 +276,20 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 - **SL fixed**: now uses sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts), not just level price - 2.0
 - **120-min cooldown** on re-sweeping the same price level (`_swept_levels` dict in ConfluenceEngine)
 - **EQH/EQL tightened**: 0.05% tolerance, 3+ touches = S-tier, 2 touches + candle gap ≥5 = A-tier, else skip
-- **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges added as sweep targets (LTF 1m/3m/5m FVG edges explicitly excluded)
-- **DOL target finder** (`_find_dol_targets`): TP1 = nearest opposing liquidity level ≥15pts away, fallback to 2R
-- **Detailed confluence descriptions**: `_build_confluence_desc()` with `_KIND_LABELS` dict, `|`-separated format
+- **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges as sweep targets; LTF excluded
+- **FVG size filter** (`MIN_FVG_SIZE` in backtest.py): 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt — rejects small gaps
+- **FVG recency cap**: only 3 most recent unmitigated FVGs per TF used as liquidity levels (`MAX_FVG_LEVELS_PER_TF=3`)
+- **TF-aware FVG tiers**: 1H/4H = A-tier, 15m/30m = B-tier; kind now includes TF e.g. "60m_fvg_high"
+- **Hard DOL requirement**: tp1 fallback to 2R removed — if no real opposing major level exists, signal is rejected
+- **DOL target finder** (`_find_dol_targets`): TP1 = nearest opposing liquidity level ≥15pts away, NO fallback
+- **Detailed confluence descriptions**: `_build_confluence_desc()` with TF-specific FVG labels
 - **`generate_screenshots.py`**: generates mplfinance charts from nq_1m.csv, uploads to Discord, embeds in Notion
 - **`setup_notion_structure.py`**: builds Year > Month > Week navigation hierarchy in Notion parent page
-- **NameError fixed**: `swings_mnq` → `swings_nq` in backtest.py line 183
 
-### OPEN PROBLEM — Signal count regression:
-- **Before these changes**: 28 signals for week of 2023-01-02
-- **After adding 15m/30m FVG levels**: 43 signals (regression — too many)
-- **Root cause**: 15m/30m have many more unmitigated FVGs than 1H/4H, creating many small sweep opportunities
-- **Fix needed**: Filter FVG-based liquidity levels by minimum gap size AND limit to most recent N per TF
-  - Suggested: `fvg.top - fvg.bottom >= MIN_FVG_SIZE[tf]` (e.g., 5pts for 15m, 8pts for 30m, 10pts for 1H/4H)
-  - Also: keep only the 3-5 most recent unmitigated FVGs per TF, not all of them
-- **Target**: 5–25 signals per trading week
+### Signal count status (post-fix):
+- **Before FVG level changes**: 28 signals for Jan 2023 week 1
+- **After adding FVG levels (bug)**: 43 signals
+- **After FVG size filter + recency cap + hard DOL**: backtest re-running — target 5–25 signals/week
 
 ### Notion structure:
 - Parent page: `33d537bf-3f5e-8049-b1ea-dacdcbd74ac5`
@@ -305,20 +304,19 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 - User may share indicator links or trade example explanations
 
 ### Next steps (in priority order):
-1. Fix the 43-signal regression: add minimum FVG size filter + limit unmitigated FVGs per TF in backtest.py
-2. Review TradingView Pine Script source for popular SMT + HTF FVG indicators to align detection rules
-3. Re-run backtest for Jan 2023 week 1, get signal count to 5-25 range
-4. Re-run `generate_screenshots.py` and `setup_notion_structure.py`
-5. User reviews trades in Notion, confirms detection is correct before expanding date range
-6. Expand to full 2023 once confirmed
+1. Review backtest signal count after FVG filter + DOL fix (target 5-25/week for Jan 2023 week 1)
+2. Review TradingView Pine Script source (Nephew_Sam_ IFVG + liquidity sweep indicators) to align Python detectors exactly
+3. Re-run `generate_screenshots.py` and `setup_notion_structure.py` once signal count is validated
+4. User reviews trades in Notion, confirms detection is correct before expanding date range
+5. Expand to full 2023 once confirmed
 
 ---
 
 ## Known Issues / TODO
 
-1. **Signal count regression**: 43 signals for week of Jan 2023 — too many, fix FVG level filtering first
-2. **Trade detection subpar**: user confirmed most Jan 2023 week 1 trades are wrong, detection needs improvement
-3. **HTF FVG as liquidity zone drawing** — need to store zone coords when level.kind is fvg_high/fvg_low
+1. **Trade detection subpar**: user confirmed most Jan 2023 week 1 trades are wrong, detection needs improvement
+2. **HTF FVG as liquidity zone drawing** — need to store zone coords when level.kind is *_fvg_high/*_fvg_low (now TF-prefixed)
+3. **IFVG / sweep alignment**: needs comparison against TradingView Nephew_Sam_ Pine Script indicators
 4. **Unit tests** — need tests for each detector validated against TradingView snapshots
 5. **Live data loop** — TradingView MCP real-time 1m feed → pipeline → journal. Not built yet.
 6. **Live executions** — future phase, after everything validated
