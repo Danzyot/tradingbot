@@ -1,12 +1,42 @@
 # Claude CoWork Session Plan — Pine Script Indicator Review
 
-**Purpose:** Extract exact detection logic from popular TradingView Pine indicators and compare
-against the Python bot's detectors. Most current signals are wrong — this session identifies
-the exact rule discrepancies and produces a concrete fix list.
+**Purpose:** Extract exact detection logic from TradingView Pine indicators and compare
+against the Python bot's detectors. Work confluence by confluence.
 
 **Operator:** A Claude instance with TradingView MCP access.  
 **Output:** A comparison table + fix list handed back to the coding Claude.  
 **Mode:** Read-only — do not edit any Python files during this session.
+
+---
+
+## ⚡ CURRENT PHASE: Phase 1 — Liquidity Sweep + CISD
+
+Focus: Read **BoS/ChoCh (Nephew_Sam_)** and **Equal Highs and Lows**.
+These two indicators answer all open questions for Phase 1.
+
+**Already fixed (don't report these):**
+- EQH/EQL tolerance: changed from 0.05% percentage → 2.0pts fixed ✓
+- Session H/L: now tracks last 5 sessions (not just most recent) ✓
+- PDH/PDL: now tracks last 5 days (not just yesterday) ✓
+- CISD temporal guard: CISD must occur after sweep candle ✓
+
+**Open questions for Phase 1 (what to extract from Pine):**
+
+| # | Question | Where to find | Python current |
+|---|----------|---------------|----------------|
+| 1 | Exact sweep condition — wick rule | BoS/ChoCh source | `c.low < level.price AND c.body_low >= level.price` |
+| 2 | Sweep: strict `<` or `<=` on wick? | BoS/ChoCh source | strict `<` |
+| 3 | EQH/EQL: tolerance in pts (not %) | Equal Highs and Lows | 2.0pts (changed today) |
+| 4 | EQH/EQL: min bar gap between touches | Equal Highs and Lows | 5 bars |
+| 5 | EQH/EQL: max levels tracked | Equal Highs and Lows | unlimited |
+| 6 | Swing pivot left/right params (15m) | BoS/ChoCh source | left=3, right=2 |
+| 7 | ChoCh trigger — body or close? | BoS/ChoCh source (ChoCh section) | `body_high > prior_bearish.open` |
+| 8 | ChoCh reference — candle open or swing? | BoS/ChoCh source | most recent opposing candle |
+
+**Start here — go directly to Part 2 (BoS/ChoCh) and Part 3 (Equal H/L).**
+Skip Parts 1, 4, 5 for now unless you have time.
+
+---
 
 ---
 
@@ -72,7 +102,7 @@ Record: number of active boxes, price levels, bullish vs bearish count.
 
 ---
 
-## Part 2: BoS / ChoCh — Nephew_Sam_ (for CISD)
+## Part 2: BoS / ChoCh — Nephew_Sam_ (PHASE 1 PRIORITY — covers sweep + CISD)
 
 ### Get the source
 ```
@@ -80,35 +110,50 @@ mcp__tradingview__pine_list_scripts(query="BoS ChoCh Nephew_Sam_")
 mcp__tradingview__pine_get_source(script_id="<id>")
 ```
 
-### What to extract
+### What to extract — SWEEP DETECTION
 
-**Swing detection parameters:**
+**We need to verify our sweep condition against this indicator's LiqSweep/sweep logic:**
+- Current Python: `c.low < level.price AND c.body_low >= level.price` (wick below, body closes back above)
+- Does this indicator detect sweeps the same way?
+- Is the wick condition `<` (strict, must go below) or `<=` (includes exact touch)?
+- Is there any minimum wick penetration depth required?
+- Does the indicator track which levels are "swept" and skip them afterward?
+
+Copy the exact Pine sweep detection block.
+
+### What to extract — SWING DETECTION
+
+**Pivot parameters:**
 - What `left` and `right` values does Pine use in `ta.pivothigh()` / `ta.pivotlow()`?
-  → **Python uses**: `left=5, right=2` for LTF, `left=3, right=2` for 15m
-- Does Pine use `high`/`low` or `close` as pivot source?
+  → **Python uses**: `left=3, right=2` for 15m swing detection (EQH/EQL)
+- Does Pine use `high`/`low` (wicks) or `close` as pivot source?
 
-**ChoCH vs BoS distinction:**
-- ChoCH = Change of Character = breaking the MOST RECENT opposing swing (this is what Python CISD approximates)
-- BoS = Break of Structure = breaking a prior swing in the TREND direction
-- Which condition maps to Python's CISD? Confirm ChoCH maps to CISD.
+### What to extract — ChoCh = CISD (THIS IS THE KEY)
 
-**CISD displacement candle:**
-- Does Pine require a minimum candle body size for the displacement (e.g., body > ATR)?
-  → **Python has no size filter** — any candle that closes above the opposing candle's open counts
-- Does Pine check `body_high > opposing.open` or `close > opposing.close`?
-  → **Python uses**: `current.body_high > most_recent_bearish_candle.open`
-- Does Pine use the most recent opposing CANDLE or the most recent opposing SWING POINT as the reference?
-  → **Python uses**: most recent opposing candle — Pine likely uses a confirmed swing point
+In ICT's model, **ChoCh (Change of Character) = CISD (Change in State of Delivery)**.
+The user does NOT want BoS — focus on the ChoCh logic specifically.
+
+**Questions:**
+- What is the exact ChoCh trigger condition? (the exact Pine line)
+  → **Python current**: `current.body_high > most_recent_bearish_candle.open`
+- Does Pine check `close > swing.price` or `body_high > opposing.open`?
+- Does ChoCh reference the most recent opposing CANDLE open, or a confirmed SWING POINT?
+  → **Python uses**: most recent opposing candle — Pine likely uses confirmed swing high/low
+- Is it body-based (`close`) or wick-based (`high`/`low`)?
+
+Copy the exact Pine ChoCh detection block.
 
 ### Read current chart output
 ```
 mcp__tradingview__data_get_pine_labels(study_filter="BoS/ChoCh (Nephew_Sam_)")
 mcp__tradingview__data_get_pine_lines(study_filter="BoS/ChoCh (Nephew_Sam_)")
 ```
+Record: How many ChoCh labels are visible? At what price levels?
 
 ### Python files to compare against
 - `src/smc_bot/detectors/cisd.py` — `CISDDetector._check_bullish()` / `_check_bearish()`
 - `src/smc_bot/detectors/swing.py` — `SwingDetector.__init__()` left/right parameters
+- `src/smc_bot/detectors/sweep.py` — `SweepDetector._check()`
 
 ---
 
