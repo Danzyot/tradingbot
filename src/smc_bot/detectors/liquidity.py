@@ -192,9 +192,16 @@ def detect_nwog(
 
 # ── FVG as Liquidity Level ─────────────────────────────────────────────────────
 
-def fvg_as_liquidity(fvg_top: float, fvg_bottom: float, ts: datetime) -> list[LiquidityLevel]:
-    """High/Low inside an unmitigated HTF FVG are B-tier liquidity."""
+def fvg_as_liquidity(fvg_top: float, fvg_bottom: float, ts: datetime, tf: int = 60) -> list[LiquidityLevel]:
+    """
+    Unmitigated HTF FVG edges as liquidity sweep targets.
+    1H (60m) and 4H (240m) = A-tier (significant imbalances).
+    15m and 30m = B-tier (useful but less powerful).
+    kind includes the TF for clear labelling: e.g. "60m_fvg_high".
+    """
+    tier = LiqTier.A if tf >= 60 else LiqTier.B
+    kind_suffix = f"{tf}m_fvg"
     return [
-        LiquidityLevel(price=fvg_top,    tier=LiqTier.B, kind="fvg_high", ts=ts),
-        LiquidityLevel(price=fvg_bottom, tier=LiqTier.B, kind="fvg_low",  ts=ts),
+        LiquidityLevel(price=fvg_top,    tier=tier, kind=f"{kind_suffix}_high", ts=ts),
+        LiquidityLevel(price=fvg_bottom, tier=tier, kind=f"{kind_suffix}_low",  ts=ts),
     ]

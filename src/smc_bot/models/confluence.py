@@ -221,8 +221,10 @@ class ConfluenceEngine:
         if not ifvg:
             return None
 
-        # Calculate R:R
+        # Require a real DOL target — no mechanical R-multiple fallback
         sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        if tp1 is None:
+            return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(candle.close, sl, tp1)
         if rr < self.min_rr:
             return None
@@ -287,6 +289,8 @@ class ConfluenceEngine:
         # Entry at CE of FVG
         entry = post_cisd_fvg.ce
         sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        if tp1 is None:
+            return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(entry, sl, tp1)
         if rr < self.min_rr:
             return None
@@ -350,34 +354,28 @@ class ConfluenceEngine:
 
     # Buffer below/above the sweep wick when placing SL
     _SL_BUFFER = 2.0
-    # Minimum TP distance to the DOL target — if nearest level is too close, skip
+    # Minimum distance (points) between entry and TP — levels closer than this are ignored
     _MIN_TP_POINTS = 15.0
 
     def _calculate_targets(
         self, setup: Setup, candle: Candle
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, Optional[float], Optional[float]]:
         """
         SL: beyond the sweep candle wick + buffer.
-        TP1: nearest opposing liquidity level (DOL target).
-        TP2: second nearest or 4R fallback.
+        TP1: nearest opposing major liquidity (DOL target). Returns None if no valid target.
+        TP2: second nearest major liquidity, or None.
+
+        NO mechanical R-multiple fallback — the trade MUST have a real draw-on-liquidity
+        target. If the chart isn't drawn to an identifiable level, we don't trade.
         """
         entry = candle.close
 
         if setup.direction == TradeDirection.LONG:
             sl = setup.sweep.sweep_candle.low - self._SL_BUFFER
-            # Find nearest level ABOVE entry as TP target
             tp1, tp2 = self._find_dol_targets(entry, above=True)
         else:
             sl = setup.sweep.sweep_candle.high + self._SL_BUFFER
-            # Find nearest level BELOW entry as TP target
             tp1, tp2 = self._find_dol_targets(entry, above=False)
-
-        risk = abs(entry - sl)
-        # Fallback if no usable DOL target
-        if tp1 is None or abs(tp1 - entry) < self._MIN_TP_POINTS:
-            tp1 = entry + risk * 2 if setup.direction == TradeDirection.LONG else entry - risk * 2
-        if tp2 is None:
-            tp2 = entry + risk * 4 if setup.direction == TradeDirection.LONG else entry - risk * 4
 
         return sl, tp1, tp2
 
@@ -434,9 +432,15 @@ class ConfluenceEngine:
         "ny_pm_high": "NY PM High", "ny_pm_low": "NY PM Low",
         "session_high": "Session High", "session_low": "Session Low",
         "swing_high": "Swing High", "swing_low": "Swing Low",
+        # Legacy fallback (pre-TF labels)
         "fvg_high": "HTF FVG High", "fvg_low": "HTF FVG Low",
         "nwog_high": "NWOG High", "nwog_low": "NWOG Low",
         "ndog_high": "NDOG High", "ndog_low": "NDOG Low",
+        # TF-specific FVG labels (e.g. "15m_fvg_high")
+        "15m_fvg_high": "15m FVG High", "15m_fvg_low": "15m FVG Low",
+        "30m_fvg_high": "30m FVG High", "30m_fvg_low": "30m FVG Low",
+        "60m_fvg_high": "1H FVG High",  "60m_fvg_low": "1H FVG Low",
+        "240m_fvg_high": "4H FVG High", "240m_fvg_low": "4H FVG Low",
     }
 
     def _build_confluence_desc(
@@ -459,9 +463,11 @@ class ConfluenceEngine:
 
         parts = [f"{direction} sweep of {kind} ({tier}-tier)"]
 
-        # FVG context: if the swept level was an HTF FVG edge, note which TF the FVG was on
+        # FVG context: if the swept level was an HTF FVG edge, note which TF
         if "fvg" in kind_raw:
-            parts.append("HTF FVG liquidity zone")
+            # kind is e.g. "60m_fvg_high" → label is "1H FVG" → extract cleanly
+            tf_label = kind.rsplit(" FVG", 1)[0] if " FVG" in kind else "HTF"
+            parts.append(f"{tf_label} FVG liquidity zone")
 
         # SMT divergence
         if smt:

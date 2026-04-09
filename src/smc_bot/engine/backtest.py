@@ -40,6 +40,14 @@ LTF_SWING_RIGHT = 2
 HTF_SWING_LEFT = 3
 HTF_SWING_RIGHT = 2
 
+# Minimum FVG size (points) for a gap to count as a liquidity level.
+# Too-small FVGs flood the level list with noise — only significant imbalances matter.
+MIN_FVG_SIZE: dict[int, float] = {15: 5.0, 30: 8.0, 60: 10.0, 240: 15.0}
+
+# Cap on how many unmitigated FVGs per TF are used as sweep targets.
+# Keep only the most recent ones — older ones are less relevant to current price action.
+MAX_FVG_LEVELS_PER_TF = 3
+
 
 def run_backtest(
     mnq_csv: Path,
@@ -161,12 +169,18 @@ def run_backtest(
                 today_open   = today_candles[0].open
                 levels.extend(detect_ndog(prev_close, today_open, today_candles[0].ts))
 
-        # 15m, 30m, 1H, 4H unmitigated FVGs as liquidity levels (A-tier)
-        # LTF (1m/3m/5m) FVG highs/lows are NOT valid sweep targets
+        # 15m, 30m, 1H, 4H unmitigated FVGs as liquidity levels.
+        # LTF (1m/3m/5m) FVG edges are NOT valid sweep targets.
+        # Filters: minimum gap size per TF + cap to most recent N per TF.
         for tf in [15, 30, 60, 240]:
-            for fvg in fvg_trackers[tf].active:
-                if not fvg.mitigated:
-                    levels.extend(fvg_as_liquidity(fvg.top, fvg.bottom, fvg.ts))
+            min_size = MIN_FVG_SIZE.get(tf, 5.0)
+            candidates = [
+                fvg for fvg in fvg_trackers[tf].active
+                if not fvg.mitigated and fvg.size >= min_size
+            ]
+            # Most recent unmitigated FVGs are most relevant — cap to MAX_FVG_LEVELS_PER_TF
+            for fvg in sorted(candidates, key=lambda f: f.ts, reverse=True)[:MAX_FVG_LEVELS_PER_TF]:
+                levels.extend(fvg_as_liquidity(fvg.top, fvg.bottom, fvg.ts, tf=tf))
 
         engine.set_liquidity_levels(levels)
 
