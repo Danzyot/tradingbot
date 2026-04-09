@@ -12,6 +12,6 @@ run_backtest(
     min_rr=1.0,
     starting_balance=50_000.0,
     risk_pct=0.005,                    # 0.5% risk per trade
-    date_from="2026-01-01",            # narrow window for model validation
-    date_to="2026-04-09",              # expand once model is confirmed correct
+    date_from="2023-01-02",            # validate one week at a time
+    date_to="2023-01-08",              # expand once model is confirmed correct
 )
