@@ -23,26 +23,29 @@ from .sweep import LiquidityLevel, LiqTier
 
 def detect_eqhl(
     swing_points: list[SwingPoint],
-    tolerance_pct: float = 0.0005,  # 0.05% — tighter, only truly equal levels
+    tolerance_pts: float = 2.0,  # fixed-point tolerance — EQH/EQL only if highs/lows are within 2pts
 ) -> list[LiquidityLevel]:
     """
-    Group swing points within tolerance_pct of each other.
+    Group swing points within tolerance_pts of each other.
     3+ highs → EQH (S-tier), 2+ highs spaced well apart → EQH (A-tier).
     Same for lows. On 15m swing points this represents significant structure.
+
+    Fixed-point tolerance (not percentage) — at NQ ~20k, 0.05% = 10pts which is too wide.
+    2pts matches typical ICT/Pine equal highs/lows definition.
     """
     levels: list[LiquidityLevel] = []
 
     highs = [p for p in swing_points if p.kind == SwingType.HIGH]
     lows  = [p for p in swing_points if p.kind == SwingType.LOW]
 
-    levels.extend(_group_equal(highs, tolerance_pct, "eqh"))
-    levels.extend(_group_equal(lows,  tolerance_pct, "eql"))
+    levels.extend(_group_equal(highs, tolerance_pts, "eqh"))
+    levels.extend(_group_equal(lows,  tolerance_pts, "eql"))
     return levels
 
 
 def _group_equal(
     points: list[SwingPoint],
-    tol: float,
+    tol_pts: float,
     kind: str,
 ) -> list[LiquidityLevel]:
     used = set()
@@ -54,7 +57,7 @@ def _group_equal(
         for j, q in enumerate(points[i + 1:], i + 1):
             if j in used:
                 continue
-            if abs(p.price - q.price) / p.price <= tol:
+            if abs(p.price - q.price) <= tol_pts:
                 group.append(q)
                 used.add(j)
         candle_gap = group[-1].candle_index - group[0].candle_index if len(group) >= 2 else 0
@@ -82,10 +85,12 @@ def detect_session_levels(
     session_name: str,
     session_start: time,
     session_end: time,
+    max_sessions: int = 5,  # how many prior sessions to track as sweep targets
 ) -> list[LiquidityLevel]:
     """
-    Extract high and low of the MOST RECENT occurrence of a session.
-    Asia crosses midnight so we group by (date, whether past midnight).
+    Extract high and low of the most recent N occurrences of a session.
+    Tracks multiple past sessions — price can sweep any prior unswept session H/L.
+    Asia crosses midnight so we group by session date.
     """
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
@@ -99,57 +104,50 @@ def detect_session_levels(
     if not session_candles_all:
         return []
 
-    # Group by date in ET — use the date at session START (handles midnight crossing)
+    # Group by date in ET
     def _session_date(c: Candle) -> date:
         et = c.ts.astimezone(ET)
-        # If session crosses midnight and candle is after midnight, attribute to previous day
         if session_end == time(0, 0) and et.time() < session_start:
             from datetime import timedelta
             return (et - timedelta(days=1)).date()
         return et.date()
 
-    from itertools import groupby
     by_date: dict[date, list[Candle]] = {}
     for c in session_candles_all:
         d = _session_date(c)
         by_date.setdefault(d, []).append(c)
 
-    # Most recent session date
-    latest_date = max(by_date.keys())
-    session_candles = by_date[latest_date]
-
-    sh = max(session_candles, key=lambda c: c.high)
-    sl = min(session_candles, key=lambda c: c.low)
-
-    return [
-        LiquidityLevel(price=sh.high, tier=LiqTier.B,
-                       kind=f"{session_name}_high", ts=sh.ts),
-        LiquidityLevel(price=sl.low,  tier=LiqTier.B,
-                       kind=f"{session_name}_low",  ts=sl.ts),
-    ]
+    # Most recent N sessions (sorted descending, skip incomplete current session)
+    all_dates = sorted(by_date.keys(), reverse=True)
+    levels: list[LiquidityLevel] = []
+    for d in all_dates[:max_sessions]:
+        sess = by_date[d]
+        sh = max(sess, key=lambda c: c.high)
+        sl = min(sess, key=lambda c: c.low)
+        levels.append(LiquidityLevel(price=sh.high, tier=LiqTier.B,
+                                     kind=f"{session_name}_high", ts=sh.ts))
+        levels.append(LiquidityLevel(price=sl.low,  tier=LiqTier.B,
+                                     kind=f"{session_name}_low",  ts=sl.ts))
+    return levels
 
 
 # ── Previous Day High/Low ─────────────────────────────────────────────────────
 
-def detect_pdhl(candles: list[Candle], today: date) -> list[LiquidityLevel]:
-    """PDH and PDL from the previous trading day (ET)."""
-    prev_candles = [
-        c for c in candles
-        if c.ts.date() < today
-    ]
+def detect_pdhl(candles: list[Candle], today: date, lookback_days: int = 5) -> list[LiquidityLevel]:
+    """PDH and PDL from the previous N trading days (ET). All are valid sweep targets."""
+    prev_candles = [c for c in candles if c.ts.date() < today]
     if not prev_candles:
         return []
 
-    prev_date = max(c.ts.date() for c in prev_candles)
-    day_candles = [c for c in prev_candles if c.ts.date() == prev_date]
-
-    pdh = max(day_candles, key=lambda c: c.high)
-    pdl = min(day_candles, key=lambda c: c.low)
-
-    return [
-        LiquidityLevel(price=pdh.high, tier=LiqTier.B, kind="pdh", ts=pdh.ts),
-        LiquidityLevel(price=pdl.low,  tier=LiqTier.B, kind="pdl", ts=pdl.ts),
-    ]
+    all_prev_dates = sorted({c.ts.date() for c in prev_candles}, reverse=True)
+    levels: list[LiquidityLevel] = []
+    for d in all_prev_dates[:lookback_days]:
+        day_candles = [c for c in prev_candles if c.ts.date() == d]
+        pdh = max(day_candles, key=lambda c: c.high)
+        pdl = min(day_candles, key=lambda c: c.low)
+        levels.append(LiquidityLevel(price=pdh.high, tier=LiqTier.B, kind="pdh", ts=pdh.ts))
+        levels.append(LiquidityLevel(price=pdl.low,  tier=LiqTier.B, kind="pdl", ts=pdl.ts))
+    return levels
 
 
 # ── NWOG / NDOG ───────────────────────────────────────────────────────────────
