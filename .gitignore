@@ -1,0 +1,38 @@
+# Large data files — download via data/fetch_databento.py
+data/nq_1m.csv
+data/es_1m.csv
+data/mnq_1m.csv
+data/mes_1m.csv
+
+# Generated outputs
+data/journal.db
+data/screenshots/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

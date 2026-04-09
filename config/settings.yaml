@@ -1,0 +1,42 @@
+# Risk
+risk_per_trade: 0.01        # 1% of equity
+max_daily_risk: 0.03        # 3% daily halt
+max_weekly_risk: 0.05       # 5% weekly halt
+max_concurrent_trades: 2
+max_trades_per_day: 3
+consecutive_loss_pause_hours: 2
+min_rr: 1.0
+
+# Swing detection lookback (candles left / right)
+swing_lookback_ltf: 5       # 1m–5m
+swing_lookback_htf: 3       # 15m+
+swing_right_bars: 2         # confirmed after N right bars
+
+# FVG
+fvg_timeframes: [1, 3, 5, 15, 30, 60, 240]   # minutes
+ifvg_search_timeframes: [5, 3, 1]              # priority order (highest first)
+
+# Liquidity
+eqhl_tolerance_pct: 0.001   # 0.1% = equal highs/lows
+sweep_expiry_bars: 3        # sweep valid for N bars after it occurs
+setup_expiry_bars: 60       # active setup expires after N 1m bars
+
+# Sessions (ET)
+sessions:
+  asia:    { start: "19:00", end: "21:00" }
+  london:  { start: "02:00", end: "05:00" }
+  ny_am:   { start: "08:30", end: "11:00" }
+  ny_pm:   { start: "13:30", end: "16:00" }
+
+# News filter
+news_pre_minutes: 30
+news_post_minutes: 15
+
+# Symbols
+primary_symbol: "MNQ"       # or NQ, ES, MES
+smt_symbol: "MES"           # correlated pair for SMT
+
+# Notifications
+telegram_enabled: false
+telegram_bot_token: ""
+telegram_chat_id: ""
