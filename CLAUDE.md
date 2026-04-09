@@ -270,7 +270,7 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ---
 
-## Current State — Where We Left Off (last updated 2026-04-09)
+## Current State — Where We Left Off (last updated 2026-04-10)
 
 ### What was built this session:
 - **SL fixed**: now uses sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts), not just level price - 2.0
@@ -287,9 +287,23 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 - **`setup_notion_structure.py`**: builds Year > Month > Week navigation hierarchy in Notion parent page
 
 ### Signal count status (post-fix):
-- **Before FVG level changes**: 28 signals for Jan 2023 week 1
-- **After adding FVG levels (bug)**: 43 signals
-- **After FVG size filter + recency cap + hard DOL**: backtest re-running — target 5–25 signals/week
+- **Before fixes**: 56+ signals/week
+- **After FVG size filter + recency cap + hard DOL**: 14 signals
+- **After Pine-aligned FVG (displacement candle check) + expiry**: **11 signals for Jan 2023 week 1** ✓ target met (5–25)
+
+### All changes committed to GitHub:
+1. SL: sweep candle wick + 2pts buffer
+2. 120-min cooldown on re-sweeping same level
+3. EQH/EQL: tighter (3+ touches = S, 2 touches + gap≥5 bars = A)
+4. HTF FVG liquidity levels: 15m/30m/1H/4H only (LTF excluded)
+5. FVG size filter: 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
+6. FVG recency cap: max 3 most recent unmitigated FVGs per TF
+7. Hard DOL requirement: no R-multiple fallback — needs real opposing level
+8. TF-aware tiers: 1H/4H = A-tier, 15m/30m = B-tier
+9. Manipulation leg: `_find_leg_start()` uses prior opposing swing as leg_start_ts
+10. IFVG leg FVG: `_collect_leg_fvgs()` only includes FVGs from leg_start_ts to sweep.ts
+11. FVG displacement candle check: `c1.close > c0.high` (Pine-aligned, from CoWork findings)
+12. FVG expiry: 30-bar window for LTF (1m-5m), no expiry for HTF (15m+) — Pine i_invWindow=15
 
 ### Notion structure:
 - Parent page: `33d537bf-3f5e-8049-b1ea-dacdcbd74ac5`
@@ -304,24 +318,43 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 - User may share indicator links or trade example explanations
 
 ### Next steps (in priority order):
-1. Review backtest signal count after FVG filter + DOL fix (target 5-25/week for Jan 2023 week 1)
-2. Review TradingView Pine Script source (Nephew_Sam_ IFVG + liquidity sweep indicators) to align Python detectors exactly
-3. Re-run `generate_screenshots.py` and `setup_notion_structure.py` once signal count is validated
-4. User reviews trades in Notion, confirms detection is correct before expanding date range
-5. Expand to full 2023 once confirmed
+1. Re-run `generate_screenshots.py` and `setup_notion_structure.py` to refresh Notion with 11 new trades
+2. User reviews Jan 2023 week 1 trades in Notion — confirm detection is correct
+3. Apply remaining Pine Script alignment fixes from CoWork/Gemini findings:
+   - IFVG inversion: verify `body_high > fvg.top` vs Pine's `close > fvg.top`
+   - EQH/EQL tolerance: likely needs fixed-point (e.g. 2pts) not percentage
+   - SMT: add temporal proximity check (NQ/ES swings must be within N bars)
+   - CISD: should reference confirmed swing point, not most recent bearish candle
+   - Swing params: verify left=5, right=2 matches Pine's ta.pivothigh()
+4. Expand to more weeks of 2023 once week 1 is confirmed correct
+
+### Multi-agent setup:
+- Claude 1 (this): main coding session, auto-pushes to GitHub on every commit
+- Claude 2: second subscription, picks up from GitHub + CLAUDE.md
+- Claude CoWork: reads Pine Script via TradingView MCP, produces fix tables
+- Gemini: token-heavy non-coding tasks — Pine Script research, long doc analysis, indicator comparisons
+
+### Gemini use cases (to save Claude tokens):
+- Reading and summarizing long Pine Script source files
+- Comparing multiple indicator implementations side-by-side
+- ICT/SMC concept research from forums/docs
+- NOT for: coding, file edits, commits, backtest runs
 
 ---
 
 ## Known Issues / TODO
 
-1. **Trade detection subpar**: user confirmed most Jan 2023 week 1 trades are wrong, detection needs improvement
-2. **HTF FVG as liquidity zone drawing** — need to store zone coords when level.kind is *_fvg_high/*_fvg_low (now TF-prefixed)
-3. **IFVG / sweep alignment**: needs comparison against TradingView Nephew_Sam_ Pine Script indicators
-4. **Unit tests** — need tests for each detector validated against TradingView snapshots
-5. **Live data loop** — TradingView MCP real-time 1m feed → pipeline → journal. Not built yet.
-6. **Live executions** — future phase, after everything validated
-7. **C-tier OBs** — Order blocks not yet implemented in liquidity detector
-8. **TradingView MCP draw_clear** — fails with "getChartApi is not defined"; use draw_remove_one instead; historical data (2023) unreachable via MCP
+1. **IFVG inversion trigger**: `body_high > fvg.top` may fire too early — Pine may use `close > fvg.top`. Needs confirmation from CoWork/Gemini Pine reading.
+2. **EQH/EQL tolerance**: 0.05% (~10pts at NQ 20k) likely too wide — Pine probably uses fixed 1-3pts. Fix: change to absolute point tolerance.
+3. **SMT temporal proximity**: no check that NQ/ES diverging swings occurred within N bars — could compare swings hours apart.
+4. **CISD reference**: uses most recent opposing candle, not confirmed swing point. Pine's ChoCH uses structural swing.
+5. **Swing params**: left=5, right=2 not yet verified against Pine's ta.pivothigh() params.
+6. **IFVG FVG must be on leg**: confirmed implemented via `_find_leg_start()` + `_collect_leg_fvgs()`. Monitor for edge cases.
+7. **HTF FVG drawing coords**: need to store zone coords when level.kind is *_fvg_high/*_fvg_low for screenshots.
+8. **Live data loop**: not built yet. Future phase.
+9. **Live executions**: future phase, after everything validated.
+10. **C-tier OBs**: order blocks not yet implemented.
+11. **TradingView MCP**: can't navigate to Jan 2023 — use generate_screenshots.py (mplfinance) instead.
 
 ---
 
