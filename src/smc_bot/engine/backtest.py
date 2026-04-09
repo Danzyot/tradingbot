@@ -105,7 +105,12 @@ def run_backtest(
     mes_by_ts = {c.ts: c for c in mes_candles}
 
     # ── Infrastructure ────────────────────────────────────────────────────────
-    fvg_trackers = {tf: FVGTracker(timeframe=tf) for tf in TFS}
+    # LTF (1m/3m/5m): expire FVGs after 30 bars — keeps only recent leg FVGs for IFVG detection
+    # HTF (15m+): no expiry — these are persistent liquidity levels, valid until mitigated
+    fvg_trackers = {
+        tf: FVGTracker(timeframe=tf, inversion_window=30 if tf <= 5 else 0)
+        for tf in TFS
+    }
     swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)
     swing_15m  = SwingDetector(left=3, right=2)   # for 15m EQH/EQL (significant levels)
     swing_ltf_es = SwingDetector(left=LTF_SWING_LEFT, right=LTF_SWING_RIGHT)  # ES SMT
