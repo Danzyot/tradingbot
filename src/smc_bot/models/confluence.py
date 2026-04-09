@@ -146,29 +146,37 @@ class ConfluenceEngine:
             expires_ts=now + timedelta(minutes=self.setup_expiry_minutes),
         )
 
+    # How far back (in minutes) to look for FVGs on the manipulation leg.
+    # The leg is the move that creates the sweep — typically 30–90 min on LTF.
+    # Anything older than this is from a previous move, not the current leg.
+    LEG_LOOKBACK_MIN = 90
+
     def _collect_leg_fvgs(
         self, sweep: Sweep, candles_by_tf: dict[int, list[Candle]]
     ) -> dict[int, list[FVG]]:
-        """FVGs that formed BEFORE the sweep on the manipulation leg."""
+        """FVGs that formed ON the manipulation leg — within LEG_LOOKBACK_MIN before the sweep."""
+        from datetime import timedelta
+        leg_start = sweep.ts - timedelta(minutes=self.LEG_LOOKBACK_MIN)
         result: dict[int, list[FVG]] = {}
         for tf, tracker in self.fvg_trackers.items():
-            # Only include FVGs formed before or at the sweep candle
             leg = [
                 fvg for fvg in tracker.active
-                if fvg.ts <= sweep.ts and not fvg.mitigated
+                if leg_start <= fvg.ts <= sweep.ts and not fvg.mitigated
             ]
             result[tf] = leg
         return result
 
     def _update_leg_fvgs(self, setup: Setup, candles_by_tf: dict[int, list[Candle]]) -> None:
-        """Add newly formed FVGs to the leg (only unmitigated ones formed after sweep)."""
+        """Add FVGs that formed AT the sweep candle itself (same 1-min bar) to the leg.
+        These are edge cases where the sweep candle also creates an FVG.
+        FVGs formed well after the sweep belong to the reversal, not the leg."""
         leg = self._leg_fvgs.setdefault(setup.id, {})
         for tf, tracker in self.fvg_trackers.items():
             existing_ids = {f.id for f in leg.get(tf, [])}
             new = [
                 fvg for fvg in tracker.active
                 if fvg.id not in existing_ids
-                and fvg.leg_sweep_ts == setup.sweep.ts
+                and fvg.ts == setup.sweep.ts   # only the sweep candle's own FVG
                 and not fvg.mitigated
             ]
             leg.setdefault(tf, []).extend(new)
