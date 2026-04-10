@@ -23,7 +23,7 @@ from .sweep import LiquidityLevel, LiqTier
 
 def detect_eqhl(
     swing_points: list[SwingPoint],
-    tolerance_pts: float = 2.0,  # fixed-point tolerance — EQH/EQL only if highs/lows are within 2pts
+    tolerance_pts: float = 1.0,  # fixed-point tolerance — EQH/EQL only if highs/lows are within 1pt
 ) -> list[LiquidityLevel]:
     """
     Group swing points within tolerance_pts of each other.

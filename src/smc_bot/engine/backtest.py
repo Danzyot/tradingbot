@@ -26,6 +26,7 @@ from ..detectors.liquidity import (
     detect_eqhl, detect_session_levels, detect_pdhl,
     detect_ndog, fvg_as_liquidity,
 )
+from ..detectors.sweep import LiqTier
 from ..filters.session import SESSIONS
 from ..models.confluence import ConfluenceEngine
 from ..journal.logger import TradeJournal
@@ -187,6 +188,22 @@ def run_backtest(
             for fvg in sorted(candidates, key=lambda f: f.ts, reverse=True)[:MAX_FVG_LEVELS_PER_TF]:
                 levels.extend(fvg_as_liquidity(fvg.top, fvg.bottom, fvg.ts, tf=tf))
 
+        # Deduplicate levels by price — keep highest-tier, then most recent, when prices are identical.
+        # Prevents the same price appearing multiple times (e.g., same FVG edge from multiple trackers).
+        seen_prices: dict[float, LiquidityLevel] = {}
+        TIER_RANK = {LiqTier.S: 0, LiqTier.A: 1, LiqTier.B: 2, LiqTier.C: 3, LiqTier.F: 4}
+        for lvl in levels:
+            p = round(lvl.price, 2)
+            if p not in seen_prices:
+                seen_prices[p] = lvl
+            else:
+                existing = seen_prices[p]
+                if TIER_RANK[lvl.tier] < TIER_RANK[existing.tier]:
+                    seen_prices[p] = lvl   # prefer higher tier
+                elif TIER_RANK[lvl.tier] == TIER_RANK[existing.tier] and lvl.ts > existing.ts:
+                    seen_prices[p] = lvl   # same tier, prefer more recent
+        levels = list(seen_prices.values())
+
         engine.set_liquidity_levels(levels)
 
         # 3. Build swing points for SMT (use 1m for both instruments)
@@ -211,13 +228,15 @@ def run_backtest(
             trade_id = journal.record_signal(signal)
             total_signals += 1
             if verbose:
+                sweep_level = signal.setup.sweep.level
                 print(
-                    f"  SIGNAL [{signal.ts.strftime('%H:%M')}] "
+                    f"  SIGNAL [{signal.ts.strftime('%m-%d %H:%M')} ET] "
                     f"{signal.direction.value.upper()} {signal.symbol} "
                     f"@ {signal.entry_price:.2f} | "
                     f"SL {signal.stop_loss:.2f} | TP1 {signal.tp1:.2f} | "
-                    f"R:R {signal.rr_ratio:.1f} | model={signal.model.value} | "
-                    f"score={signal.score}"
+                    f"R:R {signal.rr_ratio:.1f} | "
+                    f"SWEPT: {sweep_level.kind} ({sweep_level.tier.value}) @ {sweep_level.price:.2f} | "
+                    f"model={signal.model.value}"
                 )
 
         # 6. Check open trade outcomes (TP/SL/BE) against this candle
