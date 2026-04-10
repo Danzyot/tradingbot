@@ -156,9 +156,10 @@ def detect_ndog(
     prev_day_close: float,
     current_day_open: float,
     ts: datetime,
+    min_gap_pts: float = 2.0,  # skip micro-gaps — CoWork: TFO shows single line when no real gap
 ) -> list[LiquidityLevel]:
     """New Day Opening Gap: gap between previous day close and today's open."""
-    if abs(prev_day_close - current_day_open) < 1e-8:
+    if abs(prev_day_close - current_day_open) < min_gap_pts:
         return []
 
     top    = max(prev_day_close, current_day_open)
@@ -174,9 +175,10 @@ def detect_nwog(
     friday_close: float,
     sunday_open: float,
     ts: datetime,
+    min_gap_pts: float = 2.0,  # skip micro-gaps — same rule as NDOG
 ) -> list[LiquidityLevel]:
     """New Week Opening Gap: gap between Friday close and Sunday open."""
-    if abs(friday_close - sunday_open) < 1e-8:
+    if abs(friday_close - sunday_open) < min_gap_pts:
         return []
 
     top    = max(friday_close, sunday_open)

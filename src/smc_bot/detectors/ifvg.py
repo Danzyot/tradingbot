@@ -114,10 +114,15 @@ class IFVGDetector:
     @staticmethod
     def _is_inversed(candle: Candle, fvg: FVG, direction: IFVGDirection) -> bool:
         """
-        BULLISH inversion: candle body closes ABOVE the bearish FVG's top.
-        BEARISH inversion: candle body closes BELOW the bullish FVG's bottom.
+        BULLISH inversion: candle CLOSE is above the bearish FVG's top.
+        BEARISH inversion: candle CLOSE is below the bullish FVG's bottom.
+
+        CoWork fix: use close, not body_high/body_low.
+        body_high = max(open, close) — a bearish candle that opens above fvg.top
+        fires body_high > fvg.top even though price closed BELOW and is going down.
+        Using close ensures the candle actually closed beyond the FVG on that bar.
         """
         if direction == IFVGDirection.BULLISH:
-            return candle.body_high > fvg.top
+            return candle.close > fvg.top
         else:
-            return candle.body_low < fvg.bottom
+            return candle.close < fvg.bottom
