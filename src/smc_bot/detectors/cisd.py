@@ -1,16 +1,21 @@
 """
-CISD — Change In State of Delivery (ICT concept)
+CISD — Change In State of Delivery (ICT concept, Pine-aligned)
 
-More sensitive than CHoCH. Based on candle BODY opens/closes, ignores wicks.
+CoWork finding: In Pine scripts (IFVG Setup Detector v4, IFVG Ultimate+ v11),
+CISD IS the FVG inversion candle — the bar whose body crosses the FVG boundary.
+It is NOT "close above opposing candle open" (that was an approximation).
 
-Bullish CISD: a candle body closes ABOVE the open of the most recent prior bearish candle.
-  → Signals transition from bearish to bullish delivery.
+  Bullish CISD = bearish FVG inversion:
+    max(open, close) > bear_fvg.top  →  body_high crosses above the FVG top
+    Signals: delivery has shifted from bearish to bullish
 
-Bearish CISD: a candle body closes BELOW the open of the most recent prior bullish candle.
-  → Signals transition from bullish to bearish delivery.
+  Bearish CISD = bullish FVG inversion:
+    min(open, close) < bull_fvg.bottom  →  body_low crosses below the FVG bottom
+    Signals: delivery has shifted from bullish to bearish
 
-Used as optional confirmation after a liquidity sweep.
-Also used as required trigger in Model 2 (ICT 2022).
+Used in Model 2 (ICT 2022): after CISD fires, wait for price to RETRACE back
+to the FVG zone, then enter at the FVG consequent encroachment (CE).
+Model 1 enters AT the CISD candle close (same bar) — Model 2 waits for retest.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -19,6 +24,7 @@ from enum import Enum
 from typing import Optional
 
 from ..data.candle import Candle
+from .fvg import FVG, FVGType
 
 
 class CISDDirection(Enum):
@@ -30,62 +36,67 @@ class CISDDirection(Enum):
 class CISDSignal:
     direction: CISDDirection
     ts: datetime
-    trigger_candle: Candle          # the candle whose body caused the CISD
-    reference_candle: Candle        # the prior opposing candle whose open was breached
-    breach_price: float             # the open price that was breached
+    trigger_candle: Candle      # the candle whose body crossed the FVG boundary
+    source_fvg: FVG             # the FVG that was inverted (CISD reference array)
+    breach_price: float         # the FVG boundary that was crossed
 
 
 class CISDDetector:
     """
-    Scans recent candles for a CISD event.
+    Detects CISD by checking if the current candle body crosses an unmitigated
+    FVG boundary from the sweep leg.
 
-    Bullish CISD: current candle body_high > most recent bearish candle's open
-    Bearish CISD: current candle body_low  < most recent bullish candle's open
+    This replaces the old "opposing candle open" logic which was incorrect.
     """
 
-    def detect(self, candles: list[Candle]) -> CISDSignal | None:
+    def detect(
+        self,
+        candle: Candle,
+        leg_fvgs: dict[int, list[FVG]],
+        direction: "TradeDirection",
+    ) -> CISDSignal | None:
         """
-        Check the most recent closed candle for a CISD against prior candles.
-        Returns a CISDSignal if found, else None.
+        Check if `candle` creates a CISD against any FVG on the sweep leg.
+
+        For a LONG setup (swept a low):
+          - Leg FVGs are bearish (downward displacement formed the sweep)
+          - CISD fires when body_high > bear_fvg.top
+
+        For a SHORT setup (swept a high):
+          - Leg FVGs are bullish (upward displacement formed the sweep)
+          - CISD fires when body_low < bull_fvg.bottom
+
+        Returns the CISD from the highest-priority timeframe (5m > 3m > 1m).
         """
-        if len(candles) < 2:
-            return None
+        from .ifvg import TF_PRIORITY
+        from ..models.base import TradeDirection
 
-        current = candles[-1]
-
-        # Search backwards for the most recent opposing candle
-        bullish_cisd = self._check_bullish(current, candles[:-1])
-        bearish_cisd = self._check_bearish(current, candles[:-1])
-
-        # Return whichever fired (prefer bearish if both, which shouldn't happen)
-        return bullish_cisd or bearish_cisd
-
-    def _check_bullish(self, current: Candle, prior: list[Candle]) -> CISDSignal | None:
-        """Body closes above the open of the most recent bearish candle."""
-        for c in reversed(prior):
-            if c.bearish:
-                if current.body_high > c.open:
-                    return CISDSignal(
-                        direction=CISDDirection.BULLISH,
-                        ts=current.ts,
-                        trigger_candle=current,
-                        reference_candle=c,
-                        breach_price=c.open,
-                    )
-                break  # only check the most recent bearish candle
-        return None
-
-    def _check_bearish(self, current: Candle, prior: list[Candle]) -> CISDSignal | None:
-        """Body closes below the open of the most recent bullish candle."""
-        for c in reversed(prior):
-            if c.bullish:
-                if current.body_low < c.open:
-                    return CISDSignal(
-                        direction=CISDDirection.BEARISH,
-                        ts=current.ts,
-                        trigger_candle=current,
-                        reference_candle=c,
-                        breach_price=c.open,
-                    )
-                break  # only check the most recent bullish candle
+        if direction == TradeDirection.LONG:
+            expected_fvg = FVGType.BEARISH
+            for tf in TF_PRIORITY:
+                for fvg in leg_fvgs.get(tf, []):
+                    if fvg.kind != expected_fvg or fvg.mitigated:
+                        continue
+                    if candle.body_high > fvg.top:
+                        return CISDSignal(
+                            direction=CISDDirection.BULLISH,
+                            ts=candle.ts,
+                            trigger_candle=candle,
+                            source_fvg=fvg,
+                            breach_price=fvg.top,
+                        )
+        else:
+            expected_fvg = FVGType.BULLISH
+            for tf in TF_PRIORITY:
+                for fvg in leg_fvgs.get(tf, []):
+                    if fvg.kind != expected_fvg or fvg.mitigated:
+                        continue
+                    if candle.body_low < fvg.bottom:
+                        return CISDSignal(
+                            direction=CISDDirection.BEARISH,
+                            ts=candle.ts,
+                            trigger_candle=candle,
+                            source_fvg=fvg,
+                            breach_price=fvg.bottom,
+                        )
         return None

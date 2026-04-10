@@ -35,11 +35,12 @@ from ..journal.reporter import print_summary
 # Timeframes to track (minutes)
 TFS = [1, 3, 5, 15, 30, 60, 240]
 
-# Swing lookback settings
-LTF_SWING_LEFT = 5
-LTF_SWING_RIGHT = 2
-HTF_SWING_LEFT = 3
-HTF_SWING_RIGHT = 2
+# Swing lookback settings — Pine Normal sensitivity: left=4, right=4 (symmetric)
+# CoWork finding: Pine Setup Detector uses left=4, right=4 for liquidity/SMT pivots
+LTF_SWING_LEFT = 4
+LTF_SWING_RIGHT = 4
+HTF_SWING_LEFT = 4
+HTF_SWING_RIGHT = 4
 
 # Minimum FVG size (points) for a gap to count as a liquidity level.
 # Too-small FVGs flood the level list with noise — only significant imbalances matter.
@@ -113,7 +114,7 @@ def run_backtest(
         for tf in TFS
     }
     swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)
-    swing_15m  = SwingDetector(left=3, right=2)   # for 15m EQH/EQL (significant levels)
+    swing_15m  = SwingDetector(left=HTF_SWING_LEFT, right=HTF_SWING_RIGHT)   # for 15m EQH/EQL — matches Pine params
     swing_ltf_es = SwingDetector(left=LTF_SWING_LEFT, right=LTF_SWING_RIGHT)  # ES SMT
     smt = SMTDetector("NQ", "ES") if mes_candles else None
 

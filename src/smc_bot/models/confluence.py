@@ -270,28 +270,27 @@ class ConfluenceEngine:
         self, setup: Setup, candle: Candle,
         candles_by_tf: dict[int, list[Candle]], now: datetime
     ) -> Optional[Signal]:
-        """Model 2: sweep → CISD → FVG retest entry at CE."""
-        # Step 1: CISD — must occur AFTER the sweep candle
-        ltf_candles = candles_by_tf.get(1, []) or candles_by_tf.get(5, [])
-        # Only look at candles from the sweep timestamp onward
-        post_sweep_candles = [c for c in ltf_candles if c.ts >= setup.sweep.ts]
-        if len(post_sweep_candles) < 2:
-            return None
-        cisd = self.cisd_detector.detect(post_sweep_candles)
+        """Model 2: sweep → CISD (FVG inversion) → FVG retest entry at CE.
+
+        CoWork fix: CISD = the candle whose body crosses the FVG boundary.
+        After CISD fires, price must retrace to the FVG zone for entry.
+        """
+        # Step 1: CISD — body must cross a leg FVG boundary (same as IFVG trigger)
+        leg_fvgs = self._leg_fvgs.get(setup.id, {})
+        cisd = self.cisd_detector.detect(candle, leg_fvgs, setup.direction)
         if not cisd:
-            return None
-        if cisd.direction.value != setup.direction.value:
             return None
 
         setup.cisd_confirmed = True
         setup.cisd = cisd
 
-        # Step 2: FVG after CISD → price must have retraced to FVG CE
-        leg_fvgs = self._leg_fvgs.get(setup.id, {})
-        result = self._find_post_cisd_fvg(setup, cisd, leg_fvgs, candle)
-        if not result:
+        # Step 2: price must have RETRACED to the FVG that was just inverted (the CISD FVG)
+        # Entry is on the retest at CE — not at the inversion candle itself (that's Model 1)
+        post_cisd_fvg = cisd.source_fvg
+        fvg_tf = post_cisd_fvg.timeframe
+        # Price must currently be inside the FVG zone (the retest)
+        if not (post_cisd_fvg.bottom <= candle.close <= post_cisd_fvg.top):
             return None
-        post_cisd_fvg, fvg_tf = result
 
         # Entry at CE of FVG
         entry = post_cisd_fvg.ce
