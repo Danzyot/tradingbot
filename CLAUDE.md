@@ -289,12 +289,14 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 ### Signal count status (post-fix):
 - **Before fixes**: 56+ signals/week
 - **After FVG size filter + recency cap + hard DOL**: 14 signals
-- **After Pine-aligned FVG (displacement candle check) + expiry**: **11 signals for Jan 2023 week 1** ✓ target met (5–25)
+- **After Pine-aligned FVG (displacement candle check) + expiry + sweep quality gates**: **5 signals for Jan 2023 week 1** ✓ (target: 5–25)
+- Sweep quality gates: min 2pt wick penetration, min 10pt leg size, must have FVG on leg
+- EQH/EQL consumed after sweep (Fix 6 — implemented 2026-04-10)
 
 ### All changes committed to GitHub:
 1. SL: sweep candle wick + 2pts buffer
 2. 120-min cooldown on re-sweeping same level
-3. EQH/EQL: tighter (3+ touches = S, 2 touches + gap≥5 bars = A)
+3. EQH/EQL: tighter (3+ touches = S, 2 touches + gap≥5 bars = A), tolerance=1.0pt
 4. HTF FVG liquidity levels: 15m/30m/1H/4H only (LTF excluded)
 5. FVG size filter: 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
 6. FVG recency cap: max 3 most recent unmitigated FVGs per TF
@@ -304,6 +306,10 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 10. IFVG leg FVG: `_collect_leg_fvgs()` only includes FVGs from leg_start_ts to sweep.ts
 11. FVG displacement candle check: `c1.close > c0.high` (Pine-aligned, from CoWork findings)
 12. FVG expiry: 30-bar window for LTF (1m-5m), no expiry for HTF (15m+) — Pine i_invWindow=15
+13. Sweep quality gate: min 2pt wick penetration beyond level
+14. Sweep quality gate: min 10pt manipulation leg size (measured over full leg range)
+15. Sweep quality gate: must have ≥1 FVG on the leg (confirms displacement)
+16. EQH/EQL consumed on sweep: permanently removed from level list (_consumed_prices)
 
 ### Notion structure:
 - Parent page: `33d537bf-3f5e-8049-b1ea-dacdcbd74ac5`
@@ -318,14 +324,9 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 - User may share indicator links or trade example explanations
 
 ### Next steps (in priority order):
-1. Re-run `generate_screenshots.py` and `setup_notion_structure.py` to refresh Notion with 11 new trades
+1. Re-run `generate_screenshots.py` and `setup_notion_structure.py` to refresh Notion with 5 current trades
 2. User reviews Jan 2023 week 1 trades in Notion — confirm detection is correct
-3. Apply remaining Pine Script alignment fixes from CoWork/Gemini findings:
-   - IFVG inversion: verify `body_high > fvg.top` vs Pine's `close > fvg.top`
-   - EQH/EQL tolerance: likely needs fixed-point (e.g. 2pts) not percentage
-   - SMT: add temporal proximity check (NQ/ES swings must be within N bars)
-   - CISD: should reference confirmed swing point, not most recent bearish candle
-   - Swing params: verify left=5, right=2 matches Pine's ta.pivothigh()
+3. If signal count too low: relax sweep quality gates (lower _MIN_WICK_PENETRATION or _MIN_LEG_SIZE)
 4. Expand to more weeks of 2023 once week 1 is confirmed correct
 
 ### Multi-agent setup:
