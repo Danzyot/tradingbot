@@ -229,9 +229,11 @@ def run_backtest(
             trade_id = journal.record_signal(signal)
             total_signals += 1
             if verbose:
+                from zoneinfo import ZoneInfo
                 sweep_level = signal.setup.sweep.level
+                et_ts = signal.ts.astimezone(ZoneInfo("America/New_York"))
                 print(
-                    f"  SIGNAL [{signal.ts.strftime('%m-%d %H:%M')} ET] "
+                    f"  SIGNAL [{et_ts.strftime('%m-%d %H:%M')} ET] "
                     f"{signal.direction.value.upper()} {signal.symbol} "
                     f"@ {signal.entry_price:.2f} | "
                     f"SL {signal.stop_loss:.2f} | TP1 {signal.tp1:.2f} | "
