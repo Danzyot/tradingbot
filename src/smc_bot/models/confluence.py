@@ -89,8 +89,9 @@ class ConfluenceEngine:
         if is_blocked(now):
             return signals
 
-        # 3. Detect new sweeps → create Setups
+        # 3. Detect new sweeps → validate quality → create Setups
         new_sweeps = self.sweep_detector.detect(candle, self._liquidity_levels)
+        ltf_candles_1m = candles_by_tf.get(1, [])
         for sweep in new_sweeps:
             # Cooldown: skip if same level was swept recently
             price_key = round(sweep.level.price, 2)
@@ -101,15 +102,29 @@ class ConfluenceEngine:
             self._swept_levels[price_key] = now
 
             # Anchor the manipulation leg to the prior opposing swing point.
-            # This defines EXACTLY which FVGs belong to the leg vs older moves.
-            leg_start = self._find_leg_start(sweep, swings_nq or [])
-            if leg_start:
-                sweep.leg_start_ts = leg_start
+            # Optional: if no swing found, allow setup but FVG scoping falls back.
+            leg_start_ts = self._find_leg_start(sweep, swings_nq or [])
+            if leg_start_ts:
+                sweep.leg_start_ts = leg_start_ts
+
+            # Quality gate 1: wick must penetrate the level meaningfully (no micro-taps)
+            if not self._sweep_has_valid_penetration(sweep):
+                continue
+
+            # Quality gate 2: manipulation leg must be large enough (real directional move)
+            if not self._leg_is_significant(sweep, ltf_candles_1m):
+                continue
 
             setup = self._create_setup(sweep, now)
-            self._active_setups.append(setup)
             # Collect FVGs from the sweep leg across all tracked TFs
-            self._leg_fvgs[setup.id] = self._collect_leg_fvgs(sweep, candles_by_tf)
+            leg_fvgs = self._collect_leg_fvgs(sweep, candles_by_tf)
+
+            # Quality gate 3: must have at least one FVG on the leg
+            if not any(fvgs for fvgs in leg_fvgs.values()):
+                continue
+
+            self._active_setups.append(setup)
+            self._leg_fvgs[setup.id] = leg_fvgs
 
         # 4. Check SMT (optional, updates setup bonus flag)
         smt_signal = self._check_smt(swings_nq, swings_es, now)
@@ -357,6 +372,64 @@ class ConfluenceEngine:
                 if fvg.bottom <= current_candle.close <= fvg.top:
                     return fvg, tf
         return None
+
+    # ── Sweep quality gates ───────────────────────────────────────────────────
+
+    # Minimum wick extension THROUGH the level (points).
+    # CoWork finding: real manipulation sweeps extend meaningfully past the level.
+    # 1-tick taps (0.25 pts) are noise. 2 pts = 8 ticks minimum displacement.
+    _MIN_WICK_PENETRATION = 2.0   # pts
+
+    # Minimum manipulation leg size: max move from leg_start to sweep extreme.
+    # Measured as the full HIGH-to-LOW range over the leg candles.
+    # A drift sideways into a level is not a manipulation leg.
+    _MIN_LEG_SIZE = 10.0   # pts
+
+    def _sweep_has_valid_penetration(self, sweep: "Sweep") -> bool:
+        """
+        Wick must extend at least _MIN_WICK_PENETRATION pts beyond the level.
+        Bull sweep: candle.low must be at least N pts BELOW level.price.
+        Bear sweep: candle.high must be at least N pts ABOVE level.price.
+        """
+        c = sweep.sweep_candle
+        if sweep.direction.value == "bullish":
+            return (sweep.level.price - c.low) >= self._MIN_WICK_PENETRATION
+        else:
+            return (c.high - sweep.level.price) >= self._MIN_WICK_PENETRATION
+
+    def _leg_is_significant(self, sweep: "Sweep", candles_1m: list[Candle]) -> bool:
+        """
+        The manipulation leg must cover at least _MIN_LEG_SIZE pts.
+        Measures the max range across ALL candles from leg_start to sweep candle.
+        If no leg_start, uses a 30-candle lookback as a fallback.
+        """
+        if not candles_1m:
+            return True   # can't measure, don't block
+
+        c = sweep.sweep_candle
+
+        # Determine the start of the window to scan
+        if sweep.leg_start_ts:
+            leg_candles = [x for x in candles_1m
+                           if sweep.leg_start_ts <= x.ts <= c.ts]
+        else:
+            # Fallback: last 30 candles before sweep
+            idx = next((i for i, x in enumerate(candles_1m) if x.ts == c.ts), None)
+            if idx is None:
+                return True
+            leg_candles = candles_1m[max(0, idx - 30): idx + 1]
+
+        if not leg_candles:
+            return True
+
+        if sweep.direction.value == "bullish":
+            # Leg descended: measure from highest high in window to sweep low
+            leg_high = max(x.high for x in leg_candles)
+            return (leg_high - c.low) >= self._MIN_LEG_SIZE
+        else:
+            # Leg ascended: measure from lowest low in window to sweep high
+            leg_low = min(x.low for x in leg_candles)
+            return (c.high - leg_low) >= self._MIN_LEG_SIZE
 
     # Buffer below/above the sweep wick when placing SL
     _SL_BUFFER = 2.0
