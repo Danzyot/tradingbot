@@ -37,6 +37,7 @@ class ConfluenceEngine:
         smt_detector: Optional[SMTDetector] = None,
         setup_expiry_minutes: int = 60,
         min_rr: float = 1.0,
+        enable_model2: bool = False,   # Model 2 (CISD retest) off until Model 1 is validated
     ):
         self.fvg_trackers = fvg_trackers
         self.swing_detector = swing_detector
@@ -44,6 +45,7 @@ class ConfluenceEngine:
         self.setup_expiry_minutes = setup_expiry_minutes
         self.min_rr = min_rr
 
+        self.enable_model2 = enable_model2
         self.sweep_detector = SweepDetector()
         self.ifvg_detector = IFVGDetector(fvg_trackers)
         self.cisd_detector = CISDDetector()
@@ -130,11 +132,12 @@ class ConfluenceEngine:
                 self._active_setups.remove(setup)
                 continue
 
-            # Model 2: ICT 2022 (only if Model 1 didn't fire)
-            signal = self._try_model2(setup, candle, candles_by_tf, now)
-            if signal:
-                signals.append(signal)
-                self._active_setups.remove(setup)
+            # Model 2: ICT 2022 (only if Model 1 didn't fire, and Model 2 is enabled)
+            if self.enable_model2:
+                signal = self._try_model2(setup, candle, candles_by_tf, now)
+                if signal:
+                    signals.append(signal)
+                    self._active_setups.remove(setup)
 
         return signals
 
