@@ -61,11 +61,26 @@ class ConfluenceEngine:
         self._swept_levels: dict[float, datetime] = {}
         self._SWEEP_COOLDOWN_MIN = 120   # 2 hours between sweeps of the same level
 
+        # Permanently consumed levels — EQH/EQL only fire once (liquidity pool is used up).
+        # Once swept, these are removed from consideration forever (not just on cooldown).
+        # Session H/L / PDH/PDL / FVG levels are refreshed daily so they don't need this.
+        self._consumed_prices: set[float] = set()
+
     # ── Public API ────────────────────────────────────────────────────────────
 
+    # Level kinds that are permanently consumed on first sweep (liquidity pool used up)
+    _PERMANENT_CONSUMED_KINDS = {"eqh", "eql"}
+
     def set_liquidity_levels(self, levels: list[LiquidityLevel]) -> None:
-        """Update liquidity map (call whenever levels change)."""
-        self._liquidity_levels = levels
+        """Update liquidity map (call whenever levels change).
+
+        EQH/EQL levels that were previously swept are filtered out permanently —
+        their liquidity pool has been consumed and price won't revisit them as a target.
+        """
+        self._liquidity_levels = [
+            lvl for lvl in levels
+            if round(lvl.price, 2) not in self._consumed_prices
+        ]
 
     def update(
         self,
@@ -100,6 +115,10 @@ class ConfluenceEngine:
                 if elapsed < self._SWEEP_COOLDOWN_MIN:
                     continue
             self._swept_levels[price_key] = now
+
+            # Permanently consume EQH/EQL — the liquidity pool is used up on first sweep
+            if sweep.level.kind in self._PERMANENT_CONSUMED_KINDS:
+                self._consumed_prices.add(price_key)
 
             # Anchor the manipulation leg to the prior opposing swing point.
             # Optional: if no swing found, allow setup but FVG scoping falls back.
