@@ -113,6 +113,44 @@ if abs(prev_day_close - current_day_open) < 2.0:
 
 ---
 
+## BoS/ChoCh Swing Params — CONFIRMED
+
+Indicator: "Market Structure BOS/CHOCH/MSB/FVG/OB/BB (Nephew_Sam_)" — 24K likes  
+Chart TF: 15m | Labels pulled: 482 total
+
+**Inferred from bar spacing analysis:**
+
+| Parameter | Value | Evidence |
+|---|---|---|
+| `left` bars | **2** | Min same-direction gap = 5 bars = left+right+1 |
+| `right` bars | **2** | Consistent 5-bar minimum across 482 labels |
+| Source | **high/low** (not close) | Standard for structure indicators |
+| Runs on | **Chart TF** (not hardcoded) | Indicator runs on whatever TF the chart is set to |
+
+**The real fix this unlocks:**
+
+Python's EQH/EQL detection uses `swing_ltf` (left=5, right=2) on **1m data**.  
+Nephew_Sam_ uses left=2, right=2 on **15m data**.
+
+These are on completely different scales:
+- Python 1m left=5: pivot holds for 5 min left, 2 min right → micro-swings
+- Nephew_Sam_ 15m left=2: pivot holds for 30 min left, 30 min right → structural swings
+
+**Python is feeding 1m micro-swings into EQH/EQL detection. These are NOT the swings the TV indicator considers structural.** EQH/EQL should only be built from the **15m swing detector** (currently `swing_15m` in the backtest), with params updated to `left=2, right=2` to match.
+
+### Fix for Claude Code:
+**File:** `src/smc_bot/engine/backtest.py`  
+Change `detect_eqhl` to use `swing_15m` output (not `swing_ltf`), and update `swing_15m`:
+```python
+# Change:
+swing_15m = SwingDetector(left=3, right=2)
+# To:
+swing_15m = SwingDetector(left=2, right=2)  # matches Nephew_Sam_ pivot params
+```
+And only pass 15m swing points into `detect_eqhl()` — not 1m points.
+
+---
+
 ## What Still Needs Pine Source
 
 These cannot be confirmed without extracting source from BoS/ChoCh and FVG/iFVG (Nephew_Sam_):
