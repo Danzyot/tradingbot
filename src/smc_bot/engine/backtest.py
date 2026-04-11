@@ -23,7 +23,7 @@ from ..detectors.fvg import FVGTracker
 from ..detectors.swing import SwingDetector
 from ..detectors.smt import SMTDetector
 from ..detectors.liquidity import (
-    detect_eqhl, detect_session_levels, detect_pdhl,
+    detect_eqhl, detect_swing_levels, detect_session_levels, detect_pdhl,
     detect_ndog, fvg_as_liquidity,
 )
 from ..detectors.sweep import LiqTier
@@ -159,6 +159,9 @@ def run_backtest(
         # EQH/EQL from 15m swing points only (significant, not 1m noise)
         swings_15m = swing_15m.detect(candles_15m) if len(candles_15m) >= 10 else []
         levels.extend(detect_eqhl(swings_15m))
+
+        # Individual major swing H/L with notable wicks — S/B-tier per ICT tier list
+        levels.extend(detect_swing_levels(swings_15m, candles_15m))
 
         if len(ltf_candles) >= 60:
             # Major session H/L only — Asia, London, NY AM, NY PM.

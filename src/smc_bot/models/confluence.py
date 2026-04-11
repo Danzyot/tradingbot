@@ -117,10 +117,6 @@ class ConfluenceEngine:
                     continue
             self._swept_levels[price_key] = now
 
-            # Permanently consume the swept level — once the pool is taken, it's gone.
-            # Applies to all S/A/B tier levels (not just EQH/EQL).
-            self._consumed_prices.add(price_key)
-
             # Anchor the manipulation leg to the prior opposing swing point.
             # Optional: if no swing found, allow setup but FVG scoping falls back.
             leg_start_ts = self._find_leg_start(sweep, swings_nq or [])
@@ -136,6 +132,11 @@ class ConfluenceEngine:
                 continue
 
             setup = self._create_setup(sweep, now)
+
+            # Permanently consume the swept level only AFTER quality gates pass.
+            # Consuming before quality gates meant a micro-tap (< 3pt wick) would permanently
+            # block the real sweep of that level from ever forming a setup.
+            self._consumed_prices.add(price_key)
 
             # Sweep-only mode: emit signal immediately at sweep candle close, no IFVG
             if self.enable_sweep_entry:
@@ -258,9 +259,42 @@ class ConfluenceEngine:
             leg.setdefault(tf, []).extend(new)
 
     # Max time between sweep and IFVG inversion.
-    # Research consensus: reversal should be immediate — if price hasn't inverted
-    # within 20 minutes the setup context is stale.
-    _MAX_SWEEP_TO_ENTRY_MIN = 20
+    # Must match setup_expiry_min in run_backtest (60 min).
+    # 20 min was too tight — most valid IFVGs fire 20–60 min after sweep as price retests.
+    _MAX_SWEEP_TO_ENTRY_MIN = 60
+
+    # Displacement: minimum body size (pts) for a candle to count as institutional displacement.
+    # After a real sweep, institutions enter aggressively — this creates the FVG on the leg.
+    # Without displacement, the sweep is noise (random wick, not a stop hunt).
+    _MIN_DISPLACEMENT_BODY_PTS = 3.0   # 12 ticks on NQ — loose threshold to work across all sessions
+
+    def _has_displacement(
+        self, sweep: "Sweep", candles_by_tf: dict[int, list[Candle]]
+    ) -> bool:
+        """
+        Within 20 bars after the sweep, at least one candle must show displacement
+        moving AWAY from the swept level (body >= 3pts in the reversal direction).
+        Confirms the sweep was institutional (stops were hit, reversal began).
+        3pt body is intentionally loose — Asia session candles are small; NY candles are larger.
+        """
+        from ..detectors.sweep import SweepDirection
+        ltf = candles_by_tf.get(1, [])
+        if not ltf:
+            return False
+
+        post_sweep = [c for c in ltf if c.ts > sweep.ts][:20]
+        for c in post_sweep:
+            body = abs(c.close - c.open)
+            if body < self._MIN_DISPLACEMENT_BODY_PTS:
+                continue
+            if sweep.direction == SweepDirection.BULLISH:
+                if c.close > c.open:
+                    return True
+            else:
+                if c.close < c.open:
+                    return True
+
+        return False
 
     def _try_model1(
         self, setup: Setup, candle: Candle,
@@ -270,6 +304,11 @@ class ConfluenceEngine:
         # Time cap: IFVG must fire within N minutes of the sweep
         minutes_since_sweep = (now - setup.sweep.ts).total_seconds() / 60
         if minutes_since_sweep > self._MAX_SWEEP_TO_ENTRY_MIN:
+            return None
+
+        # Require displacement: at least one aggressive reversal candle after the sweep.
+        # Without it the sweep is noise — no institutional entry, no valid IFVG.
+        if not self._has_displacement(setup.sweep, candles_by_tf):
             return None
 
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
@@ -465,7 +504,7 @@ class ConfluenceEngine:
     # Sweep candle must look like a pin bar / dragonfly doji — large wick, small body.
     # The wick through the level must be >= this fraction of the total candle range.
     # A large-body candle closing at the level edge is a breakout, not a sweep.
-    _MIN_WICK_BODY_RATIO = 0.35   # wick >= 35% of total candle range
+    _MIN_WICK_BODY_RATIO = 0.20   # wick >= 20% of total candle range (relaxed — 35% was too strict)
 
     # Sweep candle body must close meaningfully back inside the level.
     # Prevents accepting candles that barely graze the body_low/high at the exact level price.

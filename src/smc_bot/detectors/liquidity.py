@@ -23,15 +23,16 @@ from .sweep import LiquidityLevel, LiqTier
 
 def detect_eqhl(
     swing_points: list[SwingPoint],
-    tolerance_pts: float = 1.0,  # fixed-point tolerance — EQH/EQL only if highs/lows are within 1pt
+    tolerance_pts: float = 0.5,  # 2 ticks — TV tracks 0.25pt apart as separate; 0.5pt is tight but not noise
 ) -> list[LiquidityLevel]:
     """
     Group swing points within tolerance_pts of each other.
-    3+ highs → EQH (S-tier), 2+ highs spaced well apart → EQH (A-tier).
-    Same for lows. On 15m swing points this represents significant structure.
+    Tier rules match the ICT tier list exactly:
+      S = 3+ touches (any gap), OR 2 touches > 3 candles apart
+      A = 2 touches, 1–3 candles apart
+      Skip: same bar or only 1 touch
 
     Fixed-point tolerance (not percentage) — at NQ ~20k, 0.05% = 10pts which is too wide.
-    2pts matches typical ICT/Pine equal highs/lows definition.
     """
     levels: list[LiquidityLevel] = []
 
@@ -61,13 +62,18 @@ def _group_equal(
                 group.append(q)
                 used.add(j)
         candle_gap = group[-1].candle_index - group[0].candle_index if len(group) >= 2 else 0
-        # Require 3+ touches for S-tier, or 2 touches with significant gap for A-tier
+        # Tier rules — match the ICT tier list exactly:
+        # S = 3+ touches (any gap), OR 2 touches with gap > 3 candles
+        # A = 2 touches with gap 1–3 candles
+        # Skip = same bar (gap 0) or only 1 touch
         if len(group) >= 3:
             tier = LiqTier.S
-        elif len(group) == 2 and candle_gap >= 5:
-            tier = LiqTier.A
+        elif len(group) == 2 and candle_gap > 3:
+            tier = LiqTier.S   # perfect EQH/EQL — well separated
+        elif len(group) == 2 and 1 <= candle_gap <= 3:
+            tier = LiqTier.A   # close but still a double-tap
         else:
-            continue   # 2 touches too close together — not a significant level
+            continue   # same bar or single touch — skip
         avg_price = sum(x.price for x in group) / len(group)
         levels.append(LiquidityLevel(
             price=avg_price,
@@ -75,6 +81,59 @@ def _group_equal(
             kind=kind,
             ts=group[0].ts,
         ))
+    return levels
+
+
+# ── Individual Swing High/Low as Liquidity Levels ────────────────────────────
+
+def detect_swing_levels(
+    swing_points: list[SwingPoint],
+    candles: list[Candle],
+    min_wick_pts: float = 5.0,
+    wick_s_tier_multiplier: float = 2.0,
+) -> list[LiquidityLevel]:
+    """
+    Individual major swing highs/lows as sweep targets, classified by wick size.
+
+    S-tier ("data high/low with massive wick"): wick >= 2x average wick — these are
+    prominent stop-hunt candles; institutions already hit stops here, making them
+    magnets for future sweeps.
+    B-tier: notable swing with wick >= min_wick_pts but below S threshold.
+    Skip: swings with tiny wicks (micro pivots, not real levels).
+
+    Only the last 20 swing points are used — older levels are less relevant.
+    """
+    if not swing_points or not candles:
+        return []
+
+    # Compute average wick size from recent candles for context
+    recent = candles[-50:] if len(candles) >= 50 else candles
+    avg_wick = sum(
+        max(c.high - max(c.open, c.close), min(c.open, c.close) - c.low)
+        for c in recent
+    ) / len(recent)
+
+    levels: list[LiquidityLevel] = []
+    candle_by_ts = {c.ts: c for c in candles}
+
+    for sp in swing_points[-20:]:
+        c = candle_by_ts.get(sp.ts)
+        if c is None:
+            continue
+
+        if sp.kind == SwingType.HIGH:
+            wick = c.high - max(c.open, c.close)   # upper wick
+            if wick < min_wick_pts:
+                continue
+            tier = LiqTier.S if wick >= avg_wick * wick_s_tier_multiplier else LiqTier.B
+            levels.append(LiquidityLevel(price=c.high, tier=tier, kind="swing_high", ts=sp.ts))
+        else:
+            wick = min(c.open, c.close) - c.low    # lower wick
+            if wick < min_wick_pts:
+                continue
+            tier = LiqTier.S if wick >= avg_wick * wick_s_tier_multiplier else LiqTier.B
+            levels.append(LiquidityLevel(price=c.low, tier=tier, kind="swing_low", ts=sp.ts))
+
     return levels
 
 
