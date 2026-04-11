@@ -1,12 +1,16 @@
 """
 Liquidity sweep detection.
 
-A valid sweep:
-- BULLISH sweep (bearish→bullish reversal): wick goes BELOW a liquidity level,
-  but the candle BODY closes ABOVE the level.
-- BEARISH sweep (bullish→bearish reversal): wick goes ABOVE a liquidity level,
-  but the candle BODY closes BELOW the level.
+ICT directional rule — non-negotiable:
+  HIGH levels (EQH, swing_high, session_high, PDH, ndog_high, fvg_high):
+    → BEARISH sweep only (wick ABOVE, body closes BACK BELOW) → SHORT trade
+    Rationale: buy stops accumulate above highs. Sweep takes them → institutions sell.
 
+  LOW levels (EQL, swing_low, session_low, PDL, ndog_low, fvg_low):
+    → BULLISH sweep only (wick BELOW, body closes BACK ABOVE) → LONG trade
+    Rationale: sell stops accumulate below lows. Sweep takes them → institutions buy.
+
+Running a bearish sweep on a LOW level (or bullish on HIGH) is NOT a valid ICT setup.
 Only S/A/B tier liquidity levels count as valid sweep targets.
 """
 from __future__ import annotations
@@ -76,25 +80,59 @@ class SweepDetector:
 
         return sweeps
 
-    def _check(self, c: Candle, level: LiquidityLevel) -> Sweep | None:
-        # Bullish sweep: wick below, body closes above
-        if (c.low < level.price and           # wick penetrates
-                c.body_low >= level.price):    # body stays above (or exactly at)
-            return Sweep(
-                ts=c.ts,
-                direction=SweepDirection.BULLISH,
-                level=level,
-                sweep_candle=c,
-            )
+    # Level kinds that are HIGH levels — swept bearishly → SHORT
+    _HIGH_KINDS = frozenset({
+        "eqh", "swing_high", "pdh",
+        "asia_high", "london_high", "ny_am_high", "ny_lunch_high", "ny_pm_high",
+        "ndog_high", "nwog_high",
+        "15m_fvg_high", "30m_fvg_high", "60m_fvg_high", "240m_fvg_high",
+    })
 
-        # Bearish sweep: wick above, body closes below
-        if (c.high > level.price and          # wick penetrates
-                c.body_high <= level.price):   # body stays below (or exactly at)
-            return Sweep(
-                ts=c.ts,
-                direction=SweepDirection.BEARISH,
-                level=level,
-                sweep_candle=c,
-            )
+    # Level kinds that are LOW levels — swept bullishly → LONG
+    _LOW_KINDS = frozenset({
+        "eql", "swing_low", "pdl",
+        "asia_low", "london_low", "ny_am_low", "ny_lunch_low", "ny_pm_low",
+        "ndog_low", "nwog_low",
+        "15m_fvg_low", "30m_fvg_low", "60m_fvg_low", "240m_fvg_low",
+    })
+
+    def _level_direction(self, level: LiquidityLevel) -> SweepDirection | None:
+        """
+        Return the ONLY valid sweep direction for this level kind.
+        HIGH levels can only be swept bearishly (wick above → short).
+        LOW levels can only be swept bullishly (wick below → long).
+        Returns None if the level kind is unrecognised (allow both — defensive fallback).
+        """
+        if level.kind in self._HIGH_KINDS:
+            return SweepDirection.BEARISH
+        if level.kind in self._LOW_KINDS:
+            return SweepDirection.BULLISH
+        # Unknown kind — check both directions but shouldn't happen with correct config
+        return None
+
+    def _check(self, c: Candle, level: LiquidityLevel) -> Sweep | None:
+        valid_dir = self._level_direction(level)
+
+        # Bullish sweep: wick below, body closes above → LONG
+        if valid_dir in (SweepDirection.BULLISH, None):
+            if (c.low < level.price and
+                    c.body_low >= level.price):
+                return Sweep(
+                    ts=c.ts,
+                    direction=SweepDirection.BULLISH,
+                    level=level,
+                    sweep_candle=c,
+                )
+
+        # Bearish sweep: wick above, body closes below → SHORT
+        if valid_dir in (SweepDirection.BEARISH, None):
+            if (c.high > level.price and
+                    c.body_high <= level.price):
+                return Sweep(
+                    ts=c.ts,
+                    direction=SweepDirection.BEARISH,
+                    level=level,
+                    sweep_candle=c,
+                )
 
         return None
