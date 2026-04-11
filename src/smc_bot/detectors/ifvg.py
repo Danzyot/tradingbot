@@ -98,7 +98,9 @@ class IFVGDetector:
             for fvg in fvgs:
                 if fvg.kind != expected_fvg_kind:
                     continue
-                if fvg.mitigated:
+                # Skip FVGs mitigated on a PRIOR candle — the pool is already gone.
+                # But if mitigated on THIS candle, the mitigation IS the inversion event.
+                if fvg.mitigated and fvg.mitigated_ts != candle.ts:
                     continue
                 if self._is_inversed(candle, fvg, ifvg_direction):
                     return IFVG(

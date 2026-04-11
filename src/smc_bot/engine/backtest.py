@@ -36,11 +36,12 @@ from ..journal.reporter import print_summary
 TFS = [1, 3, 5, 15, 30, 60, 240]
 
 # Swing lookback settings — CoWork confirmed from Nephew_Sam_ BoS/ChoCh label analysis
-# Indicator uses left=2, right=2 on 15m chart TF (structural swings, not micro pivots)
-LTF_SWING_LEFT = 2
+# EQH/EQL uses left=2, right=2 on 15m data (structural swings, matches Nephew_Sam_ params)
+# LTF uses left=5, right=2 on 1m data (manipulation leg + SMT — larger window avoids micro-swings)
+EQL_SWING_LEFT  = 2   # for swing_15m (EQH/EQL on 15m candles)
+EQL_SWING_RIGHT = 2
+LTF_SWING_LEFT  = 5   # for swing_ltf (manipulation leg + SMT on 1m candles)
 LTF_SWING_RIGHT = 2
-HTF_SWING_LEFT = 2
-HTF_SWING_RIGHT = 2
 
 # Minimum FVG size (points) for a gap to count as a liquidity level.
 # Too-small FVGs flood the level list with noise — only significant imbalances matter.
@@ -65,6 +66,7 @@ def run_backtest(
     date_to: Optional[str] = None,        # "YYYY-MM-DD" — filter candles up to this date
     clear_db: bool = True,
     verbose: bool = True,
+    sweep_entry: bool = False,            # sweep-only mode: enter on sweep close, skip IFVG
 ) -> None:
     """
     Run the full backtest.
@@ -113,8 +115,8 @@ def run_backtest(
         tf: FVGTracker(timeframe=tf, inversion_window=30 if tf <= 5 else 0)
         for tf in TFS
     }
-    swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)
-    swing_15m  = SwingDetector(left=HTF_SWING_LEFT, right=HTF_SWING_RIGHT)   # for 15m EQH/EQL — matches Pine params
+    swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)   # 1m, manipulation leg + SMT
+    swing_15m  = SwingDetector(left=EQL_SWING_LEFT, right=EQL_SWING_RIGHT)   # 15m EQH/EQL — matches Nephew_Sam_ params
     swing_ltf_es = SwingDetector(left=LTF_SWING_LEFT, right=LTF_SWING_RIGHT)  # ES SMT
     smt = SMTDetector("NQ", "ES") if mes_candles else None
 
@@ -127,6 +129,7 @@ def run_backtest(
         setup_expiry_minutes=setup_expiry_min,
         min_rr=min_rr,
     )
+    engine.enable_sweep_entry = sweep_entry
 
     journal = TradeJournal(db_path, starting_balance=starting_balance, risk_pct=risk_pct)
     if clear_db:
@@ -158,8 +161,10 @@ def run_backtest(
         levels.extend(detect_eqhl(swings_15m))
 
         if len(ltf_candles) >= 60:
-            # All session H/L (most recent occurrence of each)
-            for sess_name, (sess_start, sess_end) in SESSIONS.items():
+            # Major session H/L only — Asia, London, NY AM, NY PM.
+            # ny_lunch is excluded: too granular, not a major ICT liquidity session.
+            MAJOR_SESSIONS = {k: v for k, v in SESSIONS.items() if k != "ny_lunch"}
+            for sess_name, (sess_start, sess_end) in MAJOR_SESSIONS.items():
                 levels.extend(detect_session_levels(ltf_candles, sess_name, sess_start, sess_end))
 
             # PDH / PDL
@@ -176,10 +181,11 @@ def run_backtest(
                 today_open   = today_candles[0].open
                 levels.extend(detect_ndog(prev_close, today_open, today_candles[0].ts))
 
-        # 15m, 30m, 1H, 4H unmitigated FVGs as liquidity levels.
+        # 30m, 1H, 4H unmitigated FVGs as liquidity levels (A/B-tier).
+        # 15m FVG edges excluded — they generate too many intraday levels (noise).
         # LTF (1m/3m/5m) FVG edges are NOT valid sweep targets.
         # Filters: minimum gap size per TF + cap to most recent N per TF.
-        for tf in [15, 30, 60, 240]:
+        for tf in [30, 60, 240]:
             min_size = MIN_FVG_SIZE.get(tf, 5.0)
             candidates = [
                 fvg for fvg in fvg_trackers[tf].active

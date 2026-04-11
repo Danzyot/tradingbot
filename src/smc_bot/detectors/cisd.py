@@ -75,7 +75,9 @@ class CISDDetector:
             expected_fvg = FVGType.BEARISH
             for tf in TF_PRIORITY:
                 for fvg in leg_fvgs.get(tf, []):
-                    if fvg.kind != expected_fvg or fvg.mitigated:
+                    if fvg.kind != expected_fvg:
+                        continue
+                    if fvg.mitigated and fvg.mitigated_ts != candle.ts:
                         continue
                     if candle.body_high > fvg.top:
                         return CISDSignal(
@@ -89,7 +91,9 @@ class CISDDetector:
             expected_fvg = FVGType.BULLISH
             for tf in TF_PRIORITY:
                 for fvg in leg_fvgs.get(tf, []):
-                    if fvg.kind != expected_fvg or fvg.mitigated:
+                    if fvg.kind != expected_fvg:
+                        continue
+                    if fvg.mitigated and fvg.mitigated_ts != candle.ts:
                         continue
                     if candle.body_low < fvg.bottom:
                         return CISDSignal(

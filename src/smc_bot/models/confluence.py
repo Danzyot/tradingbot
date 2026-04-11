@@ -46,6 +46,7 @@ class ConfluenceEngine:
         self.min_rr = min_rr
 
         self.enable_model2 = enable_model2
+        self.enable_sweep_entry = False   # sweep-only mode: enter on sweep close, no IFVG
         self.sweep_detector = SweepDetector()
         self.ifvg_detector = IFVGDetector(fvg_trackers)
         self.cisd_detector = CISDDetector()
@@ -61,9 +62,9 @@ class ConfluenceEngine:
         self._swept_levels: dict[float, datetime] = {}
         self._SWEEP_COOLDOWN_MIN = 120   # 2 hours between sweeps of the same level
 
-        # Permanently consumed levels — EQH/EQL only fire once (liquidity pool is used up).
-        # Once swept, these are removed from consideration forever (not just on cooldown).
-        # Session H/L / PDH/PDL / FVG levels are refreshed daily so they don't need this.
+        # Permanently consumed levels — any major level, once swept, is gone.
+        # The liquidity pool at that price has been taken. Price won't return to it as a target.
+        # Tracks rounded price → so same price from different level sources is also blocked.
         self._consumed_prices: set[float] = set()
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -116,9 +117,9 @@ class ConfluenceEngine:
                     continue
             self._swept_levels[price_key] = now
 
-            # Permanently consume EQH/EQL — the liquidity pool is used up on first sweep
-            if sweep.level.kind in self._PERMANENT_CONSUMED_KINDS:
-                self._consumed_prices.add(price_key)
+            # Permanently consume the swept level — once the pool is taken, it's gone.
+            # Applies to all S/A/B tier levels (not just EQH/EQL).
+            self._consumed_prices.add(price_key)
 
             # Anchor the manipulation leg to the prior opposing swing point.
             # Optional: if no swing found, allow setup but FVG scoping falls back.
@@ -135,6 +136,14 @@ class ConfluenceEngine:
                 continue
 
             setup = self._create_setup(sweep, now)
+
+            # Sweep-only mode: emit signal immediately at sweep candle close, no IFVG
+            if self.enable_sweep_entry:
+                sig = self._try_sweep_entry(setup, candle, now)
+                if sig:
+                    signals.append(sig)
+                continue   # don't add to active setups — sweep-only doesn't wait for IFVG
+
             # Collect FVGs from the sweep leg across all tracked TFs
             leg_fvgs = self._collect_leg_fvgs(sweep, candles_by_tf)
 
@@ -248,11 +257,21 @@ class ConfluenceEngine:
             ]
             leg.setdefault(tf, []).extend(new)
 
+    # Max time between sweep and IFVG inversion.
+    # Research consensus: reversal should be immediate — if price hasn't inverted
+    # within 20 minutes the setup context is stale.
+    _MAX_SWEEP_TO_ENTRY_MIN = 20
+
     def _try_model1(
         self, setup: Setup, candle: Candle,
         candles_by_tf: dict[int, list[Candle]], now: datetime
     ) -> Optional[Signal]:
         """Model 1: sweep → IFVG inversion → market entry."""
+        # Time cap: IFVG must fire within N minutes of the sweep
+        minutes_since_sweep = (now - setup.sweep.ts).total_seconds() / 60
+        if minutes_since_sweep > self._MAX_SWEEP_TO_ENTRY_MIN:
+            return None
+
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         ifvg = self.ifvg_detector.check(candle, setup.sweep, leg_fvgs)
         if not ifvg:
@@ -369,6 +388,45 @@ class ConfluenceEngine:
             cisd_bonus=True,
         )
 
+    def _try_sweep_entry(
+        self, setup: Setup, candle: Candle, now: datetime
+    ) -> Optional[Signal]:
+        """Sweep-only model: enter at the close of the sweep candle itself.
+
+        No IFVG or any other confluence required — the sweep IS the signal.
+        Used to validate that the sweep detection and level quality are correct
+        before layering confluence filters on top.
+        """
+        sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        if tp1 is None:
+            return None   # still require a real DOL target
+        rr = self._calc_rr(candle.close, sl, tp1)
+        if rr < self.min_rr:
+            return None
+
+        sweep = setup.sweep
+        direction_label = "Bullish" if setup.direction == TradeDirection.LONG else "Bearish"
+        kind = self._KIND_LABELS.get(sweep.level.kind, sweep.level.kind.replace("_", " ").title())
+        desc = f"{direction_label} sweep of {kind} ({sweep.level.tier.value}-tier) | sweep-entry"
+
+        return Signal(
+            setup=setup,
+            model=ModelType.SWEEP,
+            direction=setup.direction,
+            symbol=self._pick_symbol(setup),
+            entry_price=candle.close,
+            stop_loss=sl,
+            tp1=tp1,
+            tp2=tp2,
+            rr_ratio=rr,
+            session=active_session(now) or "",
+            ts=now,
+            entry_tf=1,
+            confluence_desc=desc,
+            sweep_wick=(sweep.sweep_candle.low if setup.direction == TradeDirection.LONG
+                        else sweep.sweep_candle.high),
+        )
+
     def _find_post_cisd_fvg(
         self, setup: Setup, cisd: CISDSignal,
         leg_fvgs: dict[int, list[FVG]], current_candle: Candle
@@ -395,26 +453,54 @@ class ConfluenceEngine:
     # ── Sweep quality gates ───────────────────────────────────────────────────
 
     # Minimum wick extension THROUGH the level (points).
-    # CoWork finding: real manipulation sweeps extend meaningfully past the level.
-    # 1-tick taps (0.25 pts) are noise. 2 pts = 8 ticks minimum displacement.
-    _MIN_WICK_PENETRATION = 2.0   # pts
+    # CoWork + research consensus: real sweeps extend 3+ pts past the level.
+    # 1-tick taps (0.25 pts) are noise. 3 pts = 12 ticks minimum displacement.
+    _MIN_WICK_PENETRATION = 3.0   # pts
 
     # Minimum manipulation leg size: max move from leg_start to sweep extreme.
     # Measured as the full HIGH-to-LOW range over the leg candles.
     # A drift sideways into a level is not a manipulation leg.
     _MIN_LEG_SIZE = 10.0   # pts
 
+    # Sweep candle must look like a pin bar / dragonfly doji — large wick, small body.
+    # The wick through the level must be >= this fraction of the total candle range.
+    # A large-body candle closing at the level edge is a breakout, not a sweep.
+    _MIN_WICK_BODY_RATIO = 0.35   # wick >= 35% of total candle range
+
+    # Sweep candle body must close meaningfully back inside the level.
+    # Prevents accepting candles that barely graze the body_low/high at the exact level price.
+    _MIN_CLOSE_RETURN = 1.0   # pts — body must close at least this far inside the level
+
     def _sweep_has_valid_penetration(self, sweep: "Sweep") -> bool:
         """
-        Wick must extend at least _MIN_WICK_PENETRATION pts beyond the level.
-        Bull sweep: candle.low must be at least N pts BELOW level.price.
-        Bear sweep: candle.high must be at least N pts ABOVE level.price.
+        Three checks on the sweep candle:
+        1. Wick extends >= _MIN_WICK_PENETRATION pts beyond the level
+        2. Wick through level is >= _MIN_WICK_BODY_RATIO of total candle range (pin bar shape)
+        3. Body closes >= _MIN_CLOSE_RETURN pts back inside the level
         """
         c = sweep.sweep_candle
+        total_range = c.high - c.low
+        if total_range == 0:
+            return False
+
         if sweep.direction.value == "bullish":
-            return (sweep.level.price - c.low) >= self._MIN_WICK_PENETRATION
+            # Wick went below level; body must close back above it
+            wick_through = sweep.level.price - c.low              # how far wick went below level
+            close_return = c.body_low - sweep.level.price         # how far body is above level
+            return (
+                wick_through >= self._MIN_WICK_PENETRATION
+                and (c.lower_wick / total_range) >= self._MIN_WICK_BODY_RATIO
+                and close_return >= self._MIN_CLOSE_RETURN
+            )
         else:
-            return (c.high - sweep.level.price) >= self._MIN_WICK_PENETRATION
+            # Wick went above level; body must close back below it
+            wick_through = c.high - sweep.level.price             # how far wick went above level
+            close_return = sweep.level.price - c.body_high        # how far body is below level
+            return (
+                wick_through >= self._MIN_WICK_PENETRATION
+                and (c.upper_wick / total_range) >= self._MIN_WICK_BODY_RATIO
+                and close_return >= self._MIN_CLOSE_RETURN
+            )
 
     def _leg_is_significant(self, sweep: "Sweep", candles_1m: list[Candle]) -> bool:
         """

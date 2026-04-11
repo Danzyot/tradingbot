@@ -18,6 +18,7 @@ class TradeDirection(Enum):
 class ModelType(Enum):
     IFVG = "ifvg"           # Model 1: sweep → IFVG
     ICT2022 = "ict2022"     # Model 2: sweep → CISD → FVG retest
+    SWEEP = "sweep"         # Sweep-only: enter on sweep candle close (no confluence required)
 
 
 @dataclass

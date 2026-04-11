@@ -14,4 +14,5 @@ run_backtest(
     risk_pct=0.005,                    # 0.5% risk per trade
     date_from="2023-01-02",            # validate one week at a time
     date_to="2023-01-08",              # expand once model is confirmed correct
+    sweep_entry=False,                 # IFVG mode: require sweep → IFVG inversion
 )
