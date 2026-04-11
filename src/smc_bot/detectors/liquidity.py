@@ -89,7 +89,7 @@ def _group_equal(
 def detect_swing_levels(
     swing_points: list[SwingPoint],
     candles: list[Candle],
-    min_wick_pts: float = 5.0,
+    min_wick_pts: float = 15.0,   # only major structural pivots — 5pt was picking up random local highs
     wick_s_tier_multiplier: float = 2.0,
 ) -> list[LiquidityLevel]:
     """

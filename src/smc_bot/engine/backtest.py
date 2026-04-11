@@ -248,7 +248,7 @@ def run_backtest(
                     f"SL {signal.stop_loss:.2f} | TP1 {signal.tp1:.2f} | "
                     f"R:R {signal.rr_ratio:.1f} | "
                     f"SWEPT: {sweep_level.kind} ({sweep_level.tier.value}) @ {sweep_level.price:.2f} | "
-                    f"model={signal.model.value}"
+                    f"{signal.confluence_desc}"
                 )
 
         # 6. Check open trade outcomes (TP/SL/BE) against this candle

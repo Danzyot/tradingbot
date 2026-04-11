@@ -317,7 +317,7 @@ class ConfluenceEngine:
             return None
 
         # Require a real DOL target — no mechanical R-multiple fallback
-        sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
         if tp1 is None:
             return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(candle.close, sl, tp1)
@@ -329,6 +329,8 @@ class ConfluenceEngine:
             setup, ModelType.IFVG, entry_tf,
             ifvg=ifvg, smt=setup.smt_confirmed, cisd=setup.cisd_confirmed,
         )
+        if tp1_label:
+            desc = f"{desc} | DOL: {tp1_label}"
 
         return Signal(
             setup=setup,
@@ -386,7 +388,7 @@ class ConfluenceEngine:
 
         # Entry at CE of FVG
         entry = post_cisd_fvg.ce
-        sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
         if tp1 is None:
             return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(entry, sl, tp1)
@@ -436,7 +438,7 @@ class ConfluenceEngine:
         Used to validate that the sweep detection and level quality are correct
         before layering confluence filters on top.
         """
-        sl, tp1, tp2 = self._calculate_targets(setup, candle)
+        sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
         if tp1 is None:
             return None   # still require a real DOL target
         rr = self._calc_rr(candle.close, sl, tp1)
@@ -582,11 +584,12 @@ class ConfluenceEngine:
 
     def _calculate_targets(
         self, setup: Setup, candle: Candle
-    ) -> tuple[float, Optional[float], Optional[float]]:
+    ) -> tuple[float, Optional[float], Optional[float], Optional[str]]:
         """
         SL: beyond the sweep candle wick + buffer.
         TP1: nearest opposing major liquidity (DOL target). Returns None if no valid target.
         TP2: second nearest major liquidity, or None.
+        tp1_label: kind + tier of the TP1 level (for logging).
 
         NO mechanical R-multiple fallback — the trade MUST have a real draw-on-liquidity
         target. If the chart isn't drawn to an identifiable level, we don't trade.
@@ -595,35 +598,36 @@ class ConfluenceEngine:
 
         if setup.direction == TradeDirection.LONG:
             sl = setup.sweep.sweep_candle.low - self._SL_BUFFER
-            tp1, tp2 = self._find_dol_targets(entry, above=True)
+            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=True)
         else:
             sl = setup.sweep.sweep_candle.high + self._SL_BUFFER
-            tp1, tp2 = self._find_dol_targets(entry, above=False)
+            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=False)
 
-        return sl, tp1, tp2
+        return sl, tp1, tp2, tp1_label
 
     def _find_dol_targets(
         self, entry: float, above: bool
-    ) -> tuple[Optional[float], Optional[float]]:
-        """Return the two nearest liquidity levels on the target side."""
+    ) -> tuple[Optional[float], Optional[float], Optional[str]]:
+        """Return the two nearest liquidity levels on the target side + kind of TP1."""
         candidates = []
         for level in self._liquidity_levels:
             if above and level.price > entry + self._MIN_TP_POINTS:
-                candidates.append(level.price)
+                candidates.append((level.price, level.kind, level.tier))
             elif not above and level.price < entry - self._MIN_TP_POINTS:
-                candidates.append(level.price)
+                candidates.append((level.price, level.kind, level.tier))
 
         if not candidates:
-            return None, None
+            return None, None, None
 
         if above:
-            candidates.sort()
+            candidates.sort(key=lambda x: x[0])
         else:
-            candidates.sort(reverse=True)
+            candidates.sort(key=lambda x: x[0], reverse=True)
 
-        tp1 = candidates[0] if candidates else None
-        tp2 = candidates[1] if len(candidates) > 1 else None
-        return tp1, tp2
+        tp1_price = candidates[0][0] if candidates else None
+        tp1_label = f"{candidates[0][1]} ({candidates[0][2].value})" if candidates else None
+        tp2_price = candidates[1][0] if len(candidates) > 1 else None
+        return tp1_price, tp2_price, tp1_label
 
     def _calc_rr(self, entry: float, sl: float, tp1: float) -> float:
         risk   = abs(entry - sl)
