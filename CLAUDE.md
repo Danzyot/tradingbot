@@ -270,7 +270,7 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ---
 
-## Current State — Where We Left Off (last updated 2026-04-10)
+## Current State — Where We Left Off (last updated 2026-04-12)
 
 ### What was built this session:
 - **SL fixed**: now uses sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts), not just level price - 2.0
@@ -289,45 +289,36 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 ### Signal count status (post-fix):
 - **Before fixes**: 56+ signals/week
 - **After FVG size filter + recency cap + hard DOL**: 14 signals
-- **After Pine-aligned FVG (displacement candle check) + expiry + sweep quality gates**: **5 signals for Jan 2023 week 1** ✓ (target: 5–25)
+- **After Pine-aligned FVG (displacement candle check) + expiry + sweep quality gates**: 5 signals for Jan 2023 week 1
 - Sweep quality gates: min 2pt wick penetration, min 10pt leg size, must have FVG on leg
 - EQH/EQL consumed after sweep (Fix 6 — implemented 2026-04-10)
+- **Full Jan 2023 (2026-04-12): 9 signals, 2W/7L/0BE, 22% WR, -4.62R** — performance needs investigation
 
-### All changes committed to GitHub:
-1. SL: sweep candle wick + 2pts buffer
-2. 120-min cooldown on re-sweeping same level
-3. EQH/EQL: tighter (3+ touches = S, 2 touches + gap≥5 bars = A), tolerance=1.0pt
-4. HTF FVG liquidity levels: 15m/30m/1H/4H only (LTF excluded)
-5. FVG size filter: 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
-6. FVG recency cap: max 3 most recent unmitigated FVGs per TF
-7. Hard DOL requirement: no R-multiple fallback — needs real opposing level
-8. TF-aware tiers: 1H/4H = A-tier, 15m/30m = B-tier
-9. Manipulation leg: `_find_leg_start()` uses prior opposing swing as leg_start_ts
-10. IFVG leg FVG: `_collect_leg_fvgs()` only includes FVGs from leg_start_ts to sweep.ts
-11. FVG displacement candle check: `c1.close > c0.high` (Pine-aligned, from CoWork findings)
-12. FVG expiry: 30-bar window for LTF (1m-5m), no expiry for HTF (15m+) — Pine i_invWindow=15
-13. Sweep quality gate: min 2pt wick penetration beyond level
-14. Sweep quality gate: min 10pt manipulation leg size (measured over full leg range)
-15. Sweep quality gate: must have ≥1 FVG on the leg (confirms displacement)
-16. EQH/EQL consumed on sweep: permanently removed from level list (_consumed_prices)
+### Full Jan 2023 Trades (signals generated + recorded to data/journal.db):
+1. Jan 03 09:32 ET | SHORT @ 11102.50 | SWEPT: 30m_fvg_high (B) | 3m IFVG | DOL: ny_am_low → LOSS
+2. Jan 04 12:07 ET | SHORT @ 11037.00 | SWEPT: swing_high (B) | 5m IFVG | DOL: 60m_fvg_low → LOSS
+3. Jan 10 10:47 ET | LONG @ 11148.75 | SWEPT: 30m_fvg_low (B) | 1m IFVG | DOL: 240m_fvg_low → WIN +1.21R
+4. Jan 18 12:01 ET | LONG @ 11551.50 | SWEPT: 240m_fvg_low (A) | 1m IFVG | DOL: london_high → LOSS
+5. Jan 19 13:23 ET | SHORT @ 11376.25 | SWEPT: eqh (S) | 1m IFVG | DOL: swing_low → LOSS
+6. Jan 19 13:43 ET | SHORT @ 11401.75 | SWEPT: swing_high (S) | 1m IFVG | DOL: ny_pm_low → LOSS
+7. Jan 20 10:17 ET | SHORT @ 11458.25 | SWEPT: asia_high (B) | 5m IFVG | DOL: london_high → LOSS
+8. Jan 27 11:45 ET | SHORT @ 12185.25 | SWEPT: swing_high (S) | 1m IFVG | DOL: pdh → LOSS
+9. Jan 30 10:59 ET | LONG @ 12027.00 | SWEPT: pdl (A) | 3m IFVG | DOL: london_high → WIN +1.17R
 
-### Notion structure:
-- Parent page: `33d537bf-3f5e-8049-b1ea-dacdcbd74ac5`
-- Hierarchy: Year > Month > Week pages with summary callout + bulleted trade mentions
-- Duplicate year/month pages were cleaned up manually (one empty 2023 + January 2023 deleted)
-- Current trades: Jan 2023, week 1 — user confirmed most trades are wrong (detection subpar)
+Screenshots uploaded to Discord for all 9 trades. Notion sync pending (NOTION_TOKEN env not set in shell).
 
-### User's verdict on current trades:
-- Most week-1 trades do NOT follow the rules correctly
-- Detection works but is subpar — needs alignment with actual TradingView indicator logic
-- User wants to review popular TradingView Pine indicators for SMT and HTF FVG to align rules exactly
-- User may share indicator links or trade example explanations
+### DB Concurrency Warning:
+Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use unique `db_path` per run:
+```python
+run_backtest(..., db_path=Path('C:/tmp/bt_clean.db'), clear_db=True)
+```
+Then copy result to data/journal.db once done.
 
 ### Next steps (in priority order):
-1. Re-run `generate_screenshots.py` and `setup_notion_structure.py` to refresh Notion with 5 current trades
-2. User reviews Jan 2023 week 1 trades in Notion — confirm detection is correct
-3. If signal count too low: relax sweep quality gates (lower _MIN_WICK_PENETRATION or _MIN_LEG_SIZE)
-4. Expand to more weeks of 2023 once week 1 is confirmed correct
+1. **Review all 9 Jan 2023 screenshots** (already on Discord) — determine if losses are false signals or legitimate losers
+2. Set NOTION_TOKEN env var, then run `python setup_notion.py` to sync trades to Notion
+3. Based on review: fix the most common failure mode (bad sweep detection? Bad DOL? Wrong direction?)
+4. Expand date range once signal quality is confirmed
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit

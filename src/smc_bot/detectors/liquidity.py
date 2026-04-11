@@ -23,7 +23,7 @@ from .sweep import LiquidityLevel, LiqTier
 
 def detect_eqhl(
     swing_points: list[SwingPoint],
-    tolerance_pts: float = 0.5,  # 2 ticks — TV tracks 0.25pt apart as separate; 0.5pt is tight but not noise
+    tolerance_pts: float = 0.25,  # 1 tick — TV's Equal H/L indicator tracks 0.25pt apart as distinct levels
 ) -> list[LiquidityLevel]:
     """
     Group swing points within tolerance_pts of each other.
@@ -204,8 +204,9 @@ def detect_pdhl(candles: list[Candle], today: date, lookback_days: int = 5) -> l
         day_candles = [c for c in prev_candles if c.ts.date() == d]
         pdh = max(day_candles, key=lambda c: c.high)
         pdl = min(day_candles, key=lambda c: c.low)
-        levels.append(LiquidityLevel(price=pdh.high, tier=LiqTier.B, kind="pdh", ts=pdh.ts))
-        levels.append(LiquidityLevel(price=pdl.low,  tier=LiqTier.B, kind="pdl", ts=pdl.ts))
+        # A-tier: PDH/PDL are significant daily structure — same importance as EQH/EQL 2-touch
+        levels.append(LiquidityLevel(price=pdh.high, tier=LiqTier.A, kind="pdh", ts=pdh.ts))
+        levels.append(LiquidityLevel(price=pdl.low,  tier=LiqTier.A, kind="pdl", ts=pdl.ts))
     return levels
 
 

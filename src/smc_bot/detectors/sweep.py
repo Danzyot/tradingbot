@@ -27,6 +27,11 @@ class SweepDirection(Enum):
     BEARISH = "bearish"   # swept a high → potential short
 
 
+class SweepType(Enum):
+    GRAB  = "grab"    # single candle: wick through, body back — clean, preferred
+    SWEEP = "sweep"   # multi-candle: closes beyond then closes back — valid but slower
+
+
 class LiqTier(Enum):
     S = "S"
     A = "A"
@@ -53,6 +58,7 @@ class Sweep:
     direction: SweepDirection
     level: LiquidityLevel
     sweep_candle: Candle
+    sweep_type: SweepType = SweepType.GRAB   # default; SWEEP for multi-candle
     # The manipulation leg = candles from sweep_ts backward until prior structure
     leg_start_ts: Optional[datetime] = None
 
@@ -62,9 +68,14 @@ class SweepDetector:
     Given a list of liquidity levels and a new candle, detect valid sweeps.
     """
 
-    VALID_TIERS = {LiqTier.S, LiqTier.A, LiqTier.B}
+    VALID_TIERS = {LiqTier.S, LiqTier.A, LiqTier.B}   # B-tier included with stricter wick gate (25% ATR) in confluence.py
 
-    def detect(self, candle: Candle, levels: list[LiquidityLevel]) -> list[Sweep]:
+    def detect(
+        self,
+        candle: Candle,
+        levels: list[LiquidityLevel],
+        candle_history: list[Candle] | None = None,
+    ) -> list[Sweep]:
         sweeps: list[Sweep] = []
         for level in levels:
             if level.tier not in self.VALID_TIERS:
@@ -72,11 +83,22 @@ class SweepDetector:
             if level.swept:
                 continue
 
+            # Prefer single-candle grab (clean, preferred signal type)
             sweep = self._check(candle, level)
             if sweep:
+                sweep.sweep_type = SweepType.GRAB
                 level.swept = True
                 level.swept_ts = candle.ts
                 sweeps.append(sweep)
+                continue
+
+            # Fallback: multi-candle sweep (closes beyond then closes back)
+            if candle_history and len(candle_history) >= 3:
+                sweep = self._check_multi(candle, level, candle_history[-3:])
+                if sweep:
+                    level.swept = True
+                    level.swept_ts = candle.ts
+                    sweeps.append(sweep)
 
         return sweeps
 
@@ -136,3 +158,35 @@ class SweepDetector:
                 )
 
         return None
+
+    def _check_multi(
+        self, current: Candle, level: LiquidityLevel, recent: list[Candle]
+    ) -> Sweep | None:
+        """
+        Multi-candle sweep: a candle in `recent` CLOSED beyond the level,
+        and the CURRENT candle closes back inside. = false breakout = valid sweep.
+        More conservative than a single-candle grab but still institutional.
+        """
+        is_high = level.kind in self._HIGH_KINDS
+
+        had_close_beyond = any(
+            c.close > level.price if is_high else c.close < level.price
+            for c in recent
+        )
+        if not had_close_beyond:
+            return None
+
+        # Current candle must close back inside
+        if is_high and current.close >= level.price:
+            return None
+        if not is_high and current.close <= level.price:
+            return None
+
+        direction = SweepDirection.BEARISH if is_high else SweepDirection.BULLISH
+        return Sweep(
+            ts=current.ts,
+            direction=direction,
+            level=level,
+            sweep_candle=current,
+            sweep_type=SweepType.SWEEP,
+        )

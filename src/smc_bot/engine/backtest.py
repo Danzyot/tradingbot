@@ -37,11 +37,12 @@ TFS = [1, 3, 5, 15, 30, 60, 240]
 
 # Swing lookback settings — CoWork confirmed from Nephew_Sam_ BoS/ChoCh label analysis
 # EQH/EQL uses left=2, right=2 on 15m data (structural swings, matches Nephew_Sam_ params)
-# LTF uses left=5, right=2 on 1m data (manipulation leg + SMT — larger window avoids micro-swings)
+# LTF uses left=20, right=5 on 1m data — matches ~25-minute structural swing window
+# left=5, right=2 on 1m = only 7-minute window — too small, picks up micro-pivots
 EQL_SWING_LEFT  = 2   # for swing_15m (EQH/EQL on 15m candles)
 EQL_SWING_RIGHT = 2
-LTF_SWING_LEFT  = 5   # for swing_ltf (manipulation leg + SMT on 1m candles)
-LTF_SWING_RIGHT = 2
+LTF_SWING_LEFT  = 20  # for swing_ltf (manipulation leg + SMT on 1m candles) — major structure only
+LTF_SWING_RIGHT = 5
 
 # Minimum FVG size (points) for a gap to count as a liquidity level.
 # Too-small FVGs flood the level list with noise — only significant imbalances matter.

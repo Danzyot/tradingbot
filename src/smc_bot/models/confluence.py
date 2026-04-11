@@ -106,8 +106,24 @@ class ConfluenceEngine:
             return signals
 
         # 3. Detect new sweeps → validate quality → create Setups
-        new_sweeps = self.sweep_detector.detect(candle, self._liquidity_levels)
         ltf_candles_1m = candles_by_tf.get(1, [])
+        new_sweeps = self.sweep_detector.detect(candle, self._liquidity_levels, candle_history=ltf_candles_1m)
+        atr14 = self._compute_atr(ltf_candles_1m, period=14)
+
+        # Diagnostic: log every detected sweep before quality gates (set to True to enable)
+        _SWEEP_DIAGNOSTICS = False
+        if _SWEEP_DIAGNOSTICS and new_sweeps:
+            from ..filters.session import active_session as _active_session
+            for _s in new_sweeps:
+                _wl = _s.sweep_candle.low if _s.direction.value == "bullish" else _s.sweep_candle.high
+                _wick = abs(_wl - _s.level.price)
+                print(
+                    f"  SWEEP {_s.direction.value.upper()} | {_s.sweep_type.value} | "
+                    f"{_s.level.kind} {_s.level.tier.value} @ {_s.level.price:.2f} | "
+                    f"Wick: {_wick:.2f}pt | ATR14: {atr14:.1f} | "
+                    f"Time: {_s.ts.strftime('%m-%d %H:%M')} | "
+                    f"Session: {_active_session(_s.ts) or 'off-hours'}"
+                )
         for sweep in new_sweeps:
             # Cooldown: skip if same level was swept recently
             price_key = round(sweep.level.price, 2)
@@ -124,11 +140,11 @@ class ConfluenceEngine:
                 sweep.leg_start_ts = leg_start_ts
 
             # Quality gate 1: wick must penetrate the level meaningfully (no micro-taps)
-            if not self._sweep_has_valid_penetration(sweep):
+            if not self._sweep_has_valid_penetration(sweep, atr14):
                 continue
 
             # Quality gate 2: manipulation leg must be large enough (real directional move)
-            if not self._leg_is_significant(sweep, ltf_candles_1m):
+            if not self._leg_is_significant(sweep, ltf_candles_1m, atr14):
                 continue
 
             setup = self._create_setup(sweep, now)
@@ -263,29 +279,28 @@ class ConfluenceEngine:
     # 20 min was too tight — most valid IFVGs fire 20–60 min after sweep as price retests.
     _MAX_SWEEP_TO_ENTRY_MIN = 60
 
-    # Displacement: minimum body size (pts) for a candle to count as institutional displacement.
-    # After a real sweep, institutions enter aggressively — this creates the FVG on the leg.
-    # Without displacement, the sweep is noise (random wick, not a stop hunt).
-    _MIN_DISPLACEMENT_BODY_PTS = 3.0   # 12 ticks on NQ — loose threshold to work across all sessions
+    # Base displacement minimum — overridden by ATR at runtime
+    _BASE_MIN_DISPLACEMENT_BODY_PTS = 3.0
 
     def _has_displacement(
-        self, sweep: "Sweep", candles_by_tf: dict[int, list[Candle]]
+        self, sweep: "Sweep", candles_by_tf: dict[int, list[Candle]], atr14: float = 15.0
     ) -> bool:
         """
         Within 20 bars after the sweep, at least one candle must show displacement
-        moving AWAY from the swept level (body >= 3pts in the reversal direction).
-        Confirms the sweep was institutional (stops were hit, reversal began).
-        3pt body is intentionally loose — Asia session candles are small; NY candles are larger.
+        moving AWAY from the swept level in the reversal direction.
+        Threshold scales with ATR — 30% of ATR(14), floored at 3pt.
+        During volatile NY (ATR ~25) requires 7.5pt body; Asia (ATR ~8) requires 3pt.
         """
         from ..detectors.sweep import SweepDirection
         ltf = candles_by_tf.get(1, [])
         if not ltf:
             return False
 
+        min_body = max(self._BASE_MIN_DISPLACEMENT_BODY_PTS, atr14 * 0.30)
         post_sweep = [c for c in ltf if c.ts > sweep.ts][:20]
         for c in post_sweep:
             body = abs(c.close - c.open)
-            if body < self._MIN_DISPLACEMENT_BODY_PTS:
+            if body < min_body:
                 continue
             if sweep.direction == SweepDirection.BULLISH:
                 if c.close > c.open:
@@ -308,7 +323,9 @@ class ConfluenceEngine:
 
         # Require displacement: at least one aggressive reversal candle after the sweep.
         # Without it the sweep is noise — no institutional entry, no valid IFVG.
-        if not self._has_displacement(setup.sweep, candles_by_tf):
+        ltf_candles_1m_check = candles_by_tf.get(1, [])
+        atr14_check = self._compute_atr(ltf_candles_1m_check, period=14)
+        if not self._has_displacement(setup.sweep, candles_by_tf, atr14_check):
             return None
 
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
@@ -493,73 +510,90 @@ class ConfluenceEngine:
 
     # ── Sweep quality gates ───────────────────────────────────────────────────
 
-    # Minimum wick extension THROUGH the level (points).
-    # CoWork + research consensus: real sweeps extend 3+ pts past the level.
-    # 1-tick taps (0.25 pts) are noise. 3 pts = 12 ticks minimum displacement.
-    _MIN_WICK_PENETRATION = 3.0   # pts
+    # Base minimums — all scale up with ATR at runtime (see _compute_atr)
+    _BASE_MIN_WICK_PENETRATION = 3.0   # pts floor
+    _BASE_MIN_LEG_SIZE         = 10.0  # pts floor
+    _BASE_MIN_CLOSE_RETURN     = 1.0   # pts floor
 
-    # Minimum manipulation leg size: max move from leg_start to sweep extreme.
-    # Measured as the full HIGH-to-LOW range over the leg candles.
-    # A drift sideways into a level is not a manipulation leg.
-    _MIN_LEG_SIZE = 10.0   # pts
+    # ATR multipliers — thresholds = max(base, atr * multiplier)
+    _ATR_MULT_WICK       = 0.15   # 15% ATR for wick penetration (S/A-tier)
+    _ATR_MULT_WICK_B     = 0.25   # 25% ATR for wick penetration (B-tier — stricter, less reliable levels)
+    _ATR_MULT_LEG        = 0.80   # 80% ATR for leg size
+    _ATR_MULT_CLOSE      = 0.05   # 5% ATR for body return
 
-    # Sweep candle must look like a pin bar / dragonfly doji — large wick, small body.
-    # The wick through the level must be >= this fraction of the total candle range.
-    # A large-body candle closing at the level edge is a breakout, not a sweep.
-    _MIN_WICK_BODY_RATIO = 0.20   # wick >= 20% of total candle range (relaxed — 35% was too strict)
+    # Sweep candle pin-bar shape check (not ATR-scaled)
+    _MIN_WICK_BODY_RATIO = 0.20   # wick >= 20% of total candle range
 
-    # Sweep candle body must close meaningfully back inside the level.
-    # Prevents accepting candles that barely graze the body_low/high at the exact level price.
-    _MIN_CLOSE_RETURN = 1.0   # pts — body must close at least this far inside the level
+    def _compute_atr(self, candles: list[Candle], period: int = 14) -> float:
+        """ATR(14) from 1m candles. Falls back to 15.0 (typical NQ 1m ATR) if insufficient data."""
+        if len(candles) < period + 1:
+            return 15.0
+        trs = []
+        for i in range(1, len(candles)):
+            c = candles[i]
+            prev_close = candles[i - 1].close
+            tr = max(c.high - c.low, abs(c.high - prev_close), abs(c.low - prev_close))
+            trs.append(tr)
+        return sum(trs[-period:]) / period
 
-    def _sweep_has_valid_penetration(self, sweep: "Sweep") -> bool:
+    def _sweep_has_valid_penetration(self, sweep: "Sweep", atr14: float = 15.0) -> bool:
         """
         Three checks on the sweep candle:
-        1. Wick extends >= _MIN_WICK_PENETRATION pts beyond the level
-        2. Wick through level is >= _MIN_WICK_BODY_RATIO of total candle range (pin bar shape)
-        3. Body closes >= _MIN_CLOSE_RETURN pts back inside the level
+        1. Wick extends >= max(3.0, atr14 * 0.15) pts beyond the level
+        2. Wick through level is >= 20% of total candle range (pin bar shape)
+        3. Body closes >= max(1.0, atr14 * 0.05) pts back inside the level
+
+        Thresholds scale with ATR — stricter during volatile NY sessions, looser during Asia.
         """
         c = sweep.sweep_candle
         total_range = c.high - c.low
         if total_range == 0:
             return False
 
+        # B-tier levels (session H/L, swing H/L) require a larger wick — less reliable
+        from .base import TradeDirection
+        from ..detectors.sweep import LiqTier
+        wick_mult = (
+            self._ATR_MULT_WICK_B
+            if sweep.level.tier == LiqTier.B
+            else self._ATR_MULT_WICK
+        )
+        min_wick = max(self._BASE_MIN_WICK_PENETRATION, atr14 * wick_mult)
+        min_close = max(self._BASE_MIN_CLOSE_RETURN, atr14 * self._ATR_MULT_CLOSE)
+
         if sweep.direction.value == "bullish":
-            # Wick went below level; body must close back above it
-            wick_through = sweep.level.price - c.low              # how far wick went below level
-            close_return = c.body_low - sweep.level.price         # how far body is above level
+            wick_through = sweep.level.price - c.low
+            close_return = c.body_low - sweep.level.price
             return (
-                wick_through >= self._MIN_WICK_PENETRATION
+                wick_through >= min_wick
                 and (c.lower_wick / total_range) >= self._MIN_WICK_BODY_RATIO
-                and close_return >= self._MIN_CLOSE_RETURN
+                and close_return >= min_close
             )
         else:
-            # Wick went above level; body must close back below it
-            wick_through = c.high - sweep.level.price             # how far wick went above level
-            close_return = sweep.level.price - c.body_high        # how far body is below level
+            wick_through = c.high - sweep.level.price
+            close_return = sweep.level.price - c.body_high
             return (
-                wick_through >= self._MIN_WICK_PENETRATION
+                wick_through >= min_wick
                 and (c.upper_wick / total_range) >= self._MIN_WICK_BODY_RATIO
-                and close_return >= self._MIN_CLOSE_RETURN
+                and close_return >= min_close
             )
 
-    def _leg_is_significant(self, sweep: "Sweep", candles_1m: list[Candle]) -> bool:
+    def _leg_is_significant(self, sweep: "Sweep", candles_1m: list[Candle], atr14: float = 15.0) -> bool:
         """
-        The manipulation leg must cover at least _MIN_LEG_SIZE pts.
+        The manipulation leg must cover at least max(10.0, atr14 * 0.80) pts.
         Measures the max range across ALL candles from leg_start to sweep candle.
-        If no leg_start, uses a 30-candle lookback as a fallback.
+        Scales with ATR — during volatile sessions, requires a proportionally larger leg.
         """
         if not candles_1m:
-            return True   # can't measure, don't block
+            return True
 
+        min_leg = max(self._BASE_MIN_LEG_SIZE, atr14 * self._ATR_MULT_LEG)
         c = sweep.sweep_candle
 
-        # Determine the start of the window to scan
         if sweep.leg_start_ts:
             leg_candles = [x for x in candles_1m
                            if sweep.leg_start_ts <= x.ts <= c.ts]
         else:
-            # Fallback: last 30 candles before sweep
             idx = next((i for i, x in enumerate(candles_1m) if x.ts == c.ts), None)
             if idx is None:
                 return True
@@ -569,13 +603,11 @@ class ConfluenceEngine:
             return True
 
         if sweep.direction.value == "bullish":
-            # Leg descended: measure from highest high in window to sweep low
             leg_high = max(x.high for x in leg_candles)
-            return (leg_high - c.low) >= self._MIN_LEG_SIZE
+            return (leg_high - c.low) >= min_leg
         else:
-            # Leg ascended: measure from lowest low in window to sweep high
             leg_low = min(x.low for x in leg_candles)
-            return (c.high - leg_low) >= self._MIN_LEG_SIZE
+            return (c.high - leg_low) >= min_leg
 
     # Buffer below/above the sweep wick when placing SL
     _SL_BUFFER = 2.0

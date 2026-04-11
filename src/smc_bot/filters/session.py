@@ -2,11 +2,11 @@
 Killzone (session) filter.
 
 Only allows entries during active trading sessions (ET, auto-adjusts EST/EDT).
-Sessions (ICT killzones, confirmed from CLAUDE.md + CoWork TFO observation):
-  Asia:      19:00-21:00 ET
+Sessions (ICT killzones, confirmed from Pine Script IFVG Setup Detector + CoWork):
+  Asia:      20:00-00:00 ET (crosses midnight — runs until midnight)
   London:    02:00-05:00 ET
-  NY AM:     08:30-11:00 ET
-  NY Lunch:  12:00-13:30 ET  (CoWork confirmed TFO shows this as 5th session)
+  NY AM:     09:30-12:00 ET (opens at regular market open, not 08:30 pre-market)
+  NY Lunch:  12:00-13:30 ET
   NY PM:     13:30-16:00 ET
 """
 from __future__ import annotations
@@ -16,10 +16,11 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 
 # (start, end) in ET
+# Asia uses time(0, 0) as end to signal "runs until midnight" — handled by _in_session()
 SESSIONS: dict[str, tuple[time, time]] = {
-    "asia":      (time(19, 0),  time(21, 0)),
+    "asia":      (time(20, 0),  time(0, 0)),   # 20:00 ET until midnight
     "london":    (time(2, 0),   time(5, 0)),
-    "ny_am":     (time(8, 30),  time(11, 0)),
+    "ny_am":     (time(9, 30),  time(12, 0)),   # regular market open, not 08:30
     "ny_lunch":  (time(12, 0),  time(13, 30)),
     "ny_pm":     (time(13, 30), time(16, 0)),
 }
