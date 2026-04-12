@@ -130,6 +130,14 @@ class ConfluenceEngine:
             if not self._leg_is_significant(sweep, ltf_candles_1m, atr14):
                 continue
 
+            # Invalidate any existing active setup for the same price area.
+            # If price re-sweeps a nearby level, the old setup's leg FVGs are stale.
+            # The new sweep supersedes — only the most recent leg matters.
+            self._active_setups = [
+                s for s in self._active_setups
+                if abs(round(s.sweep.level.price, 2) - price_key) > 5.0
+            ]
+
             setup = self._create_setup(sweep, now)
 
             # Permanently consume the swept level only AFTER quality gates pass.
@@ -198,23 +206,39 @@ class ConfluenceEngine:
             expires_ts=now + timedelta(minutes=self.setup_expiry_minutes),
         )
 
+    # Maximum lookback for leg FVGs.
+    # If the swing-anchored leg start is older than this, we cap it.
+    # Prevents FVGs from a FIRST approach to a level being included when
+    # price revisits and sweeps that level on a second, deeper manipulation leg.
+    # NQ intraday manipulation legs are typically 5–30 min; 45 min is generous.
+    _MAX_LEG_LOOKBACK_MIN = 45
+
     def _collect_leg_fvgs(
         self, sweep: Sweep, candles_by_tf: dict[int, list[Candle]]
     ) -> dict[int, list[FVG]]:
         """FVGs that formed ON the manipulation leg.
 
-        The leg runs from the most recent opposing swing point up to (and including)
-        the sweep candle. If no swing start is known (leg_start_ts is None), we fall
-        back to all unmitigated FVGs before the sweep — but that should be rare since
-        _find_leg_start() is called whenever swings are available.
+        The leg is bounded by:
+        - Upper bound: sweep candle timestamp
+        - Lower bound: max(leg_start_ts from swing detection, sweep.ts - 45 min)
+
+        The 45-min cap prevents stale FVGs from an earlier approach to the same
+        level from polluting the leg. Only the MOST RECENT manipulation counts.
         """
+        from datetime import timedelta
+        hard_min_ts = sweep.ts - timedelta(minutes=self._MAX_LEG_LOOKBACK_MIN)
+        if sweep.leg_start_ts:
+            effective_start = max(sweep.leg_start_ts, hard_min_ts)
+        else:
+            effective_start = hard_min_ts
+
         result: dict[int, list[FVG]] = {}
         for tf, tracker in self.fvg_trackers.items():
             leg = [
                 fvg for fvg in tracker.active
                 if fvg.ts <= sweep.ts
                 and not fvg.mitigated
-                and (sweep.leg_start_ts is None or fvg.ts >= sweep.leg_start_ts)
+                and fvg.ts >= effective_start
             ]
             result[tf] = leg
         return result
