@@ -132,8 +132,20 @@ class SweepDetector:
         # Unknown kind — check both directions but shouldn't happen with correct config
         return None
 
+    # Priority 3 (research): sweep candle body must be ≥ 50% of total range.
+    # "Candle 2 must support expansion = small wick" (FKTBkTzsmUA).
+    # A wick-heavy sweep candle shows indecision, not institutional conviction.
+    _MIN_SWEEP_BODY_RATIO = 0.50
+
     def _check(self, c: Candle, level: LiquidityLevel) -> Sweep | None:
         valid_dir = self._level_direction(level)
+
+        # Sweep candle body dominance: body must be ≥ 50% of total range.
+        candle_range = c.high - c.low
+        if candle_range > 0:
+            body = abs(c.close - c.open)
+            if body / candle_range < self._MIN_SWEEP_BODY_RATIO:
+                return None
 
         # Bullish sweep: wick below, body closes above → LONG
         if valid_dir in (SweepDirection.BULLISH, None):

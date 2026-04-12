@@ -45,3 +45,32 @@ def active_session(ts: datetime) -> str | None:
 
 def in_killzone(ts: datetime) -> bool:
     return active_session(ts) is not None
+
+
+# HTF candle opens where manipulation commonly spikes (PO3 time aspect).
+# Entering 1-5 min BEFORE these times destroys win rate — the HTF candle is about to
+# open and will likely manipulate in one direction before distributing the other way.
+_HTF_OPENS_ET: tuple[time, ...] = (
+    time(9, 30),   # NY regular open — biggest PO3 source
+    time(10, 0),   # 30-min candle boundary — frequent manipulation spike
+    time(10, 30),  # another common 30m open
+    time(15, 0),   # 30m boundary in NY PM
+    time(15, 30),  # 30m boundary in NY PM
+)
+_HTF_OPEN_BLOCK_MINUTES = 5   # block entries this many minutes before each open
+
+
+def near_htf_open(ts: datetime) -> bool:
+    """
+    Returns True if the timestamp is within _HTF_OPEN_BLOCK_MINUTES of a major
+    HTF candle open. Entering here reduces win rate significantly because the
+    next candle will likely manipulate (PO3 dynamic at these times).
+    """
+    et = ts.astimezone(ET)
+    t = et.time()
+    t_minutes = t.hour * 60 + t.minute
+    for htf_open in _HTF_OPENS_ET:
+        open_minutes = htf_open.hour * 60 + htf_open.minute
+        if open_minutes - _HTF_OPEN_BLOCK_MINUTES <= t_minutes < open_minutes:
+            return True
+    return False

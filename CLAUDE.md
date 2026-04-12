@@ -270,40 +270,44 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ## Current State — Where We Left Off (last updated 2026-04-12)
 
-### What was built this session:
-- **SL fixed**: now uses sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts), not just level price - 2.0
-- **120-min cooldown** on re-sweeping the same price level (`_swept_levels` dict in ConfluenceEngine)
-- **EQH/EQL tightened**: 0.05% tolerance, 3+ touches = S-tier, 2 touches + candle gap ≥5 = A-tier, else skip
-- **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges as sweep targets; LTF excluded
-- **FVG size filter** (`MIN_FVG_SIZE` in backtest.py): 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt — rejects small gaps
-- **FVG recency cap**: only 3 most recent unmitigated FVGs per TF used as liquidity levels (`MAX_FVG_LEVELS_PER_TF=3`)
-- **TF-aware FVG tiers**: 1H/4H = A-tier, 15m/30m = B-tier; kind now includes TF e.g. "60m_fvg_high"
-- **Hard DOL requirement**: tp1 fallback to 2R removed — if no real opposing major level exists, signal is rejected
-- **DOL target finder** (`_find_dol_targets`): TP1 = nearest opposing liquidity level ≥15pts away, NO fallback
-- **Detailed confluence descriptions**: `_build_confluence_desc()` with TF-specific FVG labels
-- **`generate_screenshots.py`**: generates mplfinance charts from nq_1m.csv, uploads to Discord, embeds in Notion
-- **`setup_notion_structure.py`**: builds Year > Month > Week navigation hierarchy in Notion parent page
+### What was built across sessions (cumulative):
+- **SL fixed**: sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts)
+- **120-min cooldown** on re-sweeping the same price level (`_swept_levels`)
+- **EQH/EQL tightened**: 0.25pt tolerance, S-tier (3+ touches), A-tier (2 touches + gap≥5)
+- **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges as sweep targets
+- **FVG size filter** (backtest.py): 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
+- **FVG recency cap**: 3 most recent unmitigated FVGs per TF (`MAX_FVG_LEVELS_PER_TF=3`)
+- **Hard DOL requirement**: TP1 must be a real opposing major level ≥15pts away — no R fallback
+- **TF_PRIORITY = [5,4,3,2,1]** + 2m/4m FVG trackers in backtest (Priority 1 ✓)
+- **All FVGs of highest TF on leg must invert before entry** (Priority 2 ✓)
+- **Sweep candle body dominance**: body ≥ 50% of total range in sweep.py `_check()` (Priority 3 ✓)
+- **Strong IFVG close**: close ≥ 2pt beyond FVG far edge (`_ifvg_close_is_strong`) (Priority 4 ✓)
+- **DOL = LRL only**: hard DOL requirement, no HRL targets (Priority 5 ✓)
+- **IFVG inversion candle body dominance**: body ≥ 50% of range (`_ifvg_close_is_body_dominant`)
+- **near_htf_open filter**: blocks IFVG signal emission 1-5 min before 9:30/10:00/10:30/15:00/15:30 ET
+- **90-min leg FVG cap**: FVGs on manipulation leg must be within 90 min of sweep candle
+- **Setup invalidation**: when re-sweep fires near existing setup level (within 5pt), old setup killed
+- **ATR-adaptive sweep gates**: wick penetration, leg size, displacement all scale with ATR(14)
+- **Multi-candle sweep detection** (SweepType.GRAB / SWEEP)
+- **Displacement check**: ≥1 body-dominant reversal candle within 20 bars of sweep
 
-### Signal count status (post-fix):
-- **Before fixes**: 56+ signals/week
-- **After FVG size filter + recency cap + hard DOL**: 14 signals
-- **After Pine-aligned FVG (displacement candle check) + expiry + sweep quality gates**: 5 signals for Jan 2023 week 1
-- Sweep quality gates: min 2pt wick penetration, min 10pt leg size, must have FVG on leg
-- EQH/EQL consumed after sweep (Fix 6 — implemented 2026-04-10)
-- **Full Jan 2023 (2026-04-12): 9 signals, 2W/7L/0BE, 22% WR, -4.62R** — performance needs investigation
+### Research synthesis priority list — status:
+| # | Change | Status |
+|---|--------|--------|
+| 1 | TF_PRIORITY = [5,4,3,2,1] + 2m/4m trackers | ✅ Done |
+| 2 | All FVGs of same TF on leg must invert | ✅ Done |
+| 3 | Sweep candle body ≥ 50% of range | ✅ Done |
+| 4 | Strong IFVG close ≥ 2pt beyond far edge | ✅ Done |
+| 5 | DOL = LRL only | ✅ Done |
+| 6 | BE at first internal H/L (not at 1R) | ❌ Not yet (lower priority) |
+| 7 | Intermediate H/L as top-tier sweep targets | Partial |
+| 8 | HTF alignment gate (no bearish IFVG in bullish HTF) | ❌ Not yet |
 
-### Full Jan 2023 Trades (signals generated + recorded to data/journal.db):
-1. Jan 03 09:32 ET | SHORT @ 11102.50 | SWEPT: 30m_fvg_high (B) | 3m IFVG | DOL: ny_am_low → LOSS
-2. Jan 04 12:07 ET | SHORT @ 11037.00 | SWEPT: swing_high (B) | 5m IFVG | DOL: 60m_fvg_low → LOSS
-3. Jan 10 10:47 ET | LONG @ 11148.75 | SWEPT: 30m_fvg_low (B) | 1m IFVG | DOL: 240m_fvg_low → WIN +1.21R
-4. Jan 18 12:01 ET | LONG @ 11551.50 | SWEPT: 240m_fvg_low (A) | 1m IFVG | DOL: london_high → LOSS
-5. Jan 19 13:23 ET | SHORT @ 11376.25 | SWEPT: eqh (S) | 1m IFVG | DOL: swing_low → LOSS
-6. Jan 19 13:43 ET | SHORT @ 11401.75 | SWEPT: swing_high (S) | 1m IFVG | DOL: ny_pm_low → LOSS
-7. Jan 20 10:17 ET | SHORT @ 11458.25 | SWEPT: asia_high (B) | 5m IFVG | DOL: london_high → LOSS
-8. Jan 27 11:45 ET | SHORT @ 12185.25 | SWEPT: swing_high (S) | 1m IFVG | DOL: pdh → LOSS
-9. Jan 30 10:59 ET | LONG @ 12027.00 | SWEPT: pdl (A) | 3m IFVG | DOL: london_high → WIN +1.17R
-
-Screenshots uploaded to Discord for all 9 trades. Notion sync pending (NOTION_TOKEN env not set in shell).
+### Signal count status:
+- **Full Jan 2023 with all current filters**: 2 signals (Jan 03 SHORT loss, Jan 04 SHORT loss)
+- This is a dramatic drop from the original 9 — most were eliminated by the 45→90-min leg cap
+  and ATR-adaptive sweep quality gates, correctly filtering noise and stale leg signals
+- The original 9 signals had only 2W/7L (22% WR, -4.62R) — the filter reduction is correct direction
 
 ### DB Concurrency Warning:
 Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use unique `db_path` per run:
@@ -313,10 +317,10 @@ run_backtest(..., db_path=Path('C:/tmp/bt_clean.db'), clear_db=True)
 Then copy result to data/journal.db once done.
 
 ### Next steps (in priority order):
-1. **Review all 9 Jan 2023 screenshots** (already on Discord) — determine if losses are false signals or legitimate losers
-2. Set NOTION_TOKEN env var, then run `python setup_notion.py` to sync trades to Notion
-3. Based on review: fix the most common failure mode (bad sweep detection? Bad DOL? Wrong direction?)
-4. Expand date range once signal quality is confirmed
+1. **Expand backtest to Feb/Mar/Apr 2023** — Jan 2023 only has 2 signals, need more data to validate
+2. **Implement Priority 6** (BE at first internal H/L) after signal quality validated
+3. **Implement Priority 8** (HTF alignment gate) — skip bearish IFVG when HTF clearly bullish
+4. **Set NOTION_TOKEN** env var, then `python setup_notion.py` to sync trades to Notion
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit
@@ -334,7 +338,7 @@ Then copy result to data/journal.db once done.
 
 ## Known Issues / TODO
 
-1. **IFVG inversion trigger**: `body_high > fvg.top` may fire too early — Pine may use `close > fvg.top`. Needs confirmation from CoWork/Gemini Pine reading.
+1. **IFVG inversion trigger**: confirmed using `close > fvg.top` (not wick). Resolved.
 2. **EQH/EQL tolerance**: 0.05% (~10pts at NQ 20k) likely too wide — Pine probably uses fixed 1-3pts. Fix: change to absolute point tolerance.
 3. **SMT temporal proximity**: no check that NQ/ES diverging swings occurred within N bars — could compare swings hours apart.
 4. **CISD reference**: uses most recent opposing candle, not confirmed swing point. Pine's ChoCH uses structural swing.

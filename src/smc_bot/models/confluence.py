@@ -20,7 +20,7 @@ from ..detectors.ifvg import IFVGDetector, IFVG, IFVGDirection
 from ..detectors.cisd import CISDDetector, CISDSignal
 from ..detectors.smt import SMTDetector, SMTSignal
 from ..detectors.swing import SwingDetector, SwingPoint, SwingType
-from ..filters.session import in_killzone, active_session
+from ..filters.session import in_killzone, active_session, near_htf_open
 from ..filters.news import is_blocked
 from .base import Setup, Signal, TradeDirection, ModelType
 
@@ -165,6 +165,12 @@ class ConfluenceEngine:
         # 4. Check SMT (optional, updates setup bonus flag)
         smt_signal = self._check_smt(swings_nq, swings_es, now)
 
+        # Block signal emission 1-5 min before major HTF candle opens.
+        # Sweeps are still detected and setups created — only entry is blocked.
+        # 9:30, 10:00, 10:30, 15:00, 15:30 ET — PO3 manipulation timing.
+        if near_htf_open(now):
+            return signals
+
         # 5. Try to fire entry models on active setups
         for setup in list(self._active_setups):
             # Update leg FVGs with any new ones formed since sweep
@@ -210,8 +216,8 @@ class ConfluenceEngine:
     # If the swing-anchored leg start is older than this, we cap it.
     # Prevents FVGs from a FIRST approach to a level being included when
     # price revisits and sweeps that level on a second, deeper manipulation leg.
-    # NQ intraday manipulation legs are typically 5–30 min; 45 min is generous.
-    _MAX_LEG_LOOKBACK_MIN = 45
+    # NQ intraday manipulation legs are typically 5–60 min; 90 min covers all valid legs.
+    _MAX_LEG_LOOKBACK_MIN = 90
 
     def _collect_leg_fvgs(
         self, sweep: Sweep, candles_by_tf: dict[int, list[Candle]]
@@ -220,9 +226,9 @@ class ConfluenceEngine:
 
         The leg is bounded by:
         - Upper bound: sweep candle timestamp
-        - Lower bound: max(leg_start_ts from swing detection, sweep.ts - 45 min)
+        - Lower bound: max(leg_start_ts from swing detection, sweep.ts - 90 min)
 
-        The 45-min cap prevents stale FVGs from an earlier approach to the same
+        The 90-min cap prevents stale FVGs from an earlier approach to the same
         level from polluting the leg. Only the MOST RECENT manipulation counts.
         """
         from datetime import timedelta
@@ -335,6 +341,16 @@ class ConfluenceEngine:
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         ifvg = self.ifvg_detector.check(candle, setup.sweep, leg_fvgs)
         if not ifvg:
+            return None
+
+        # IFVG close quality: inversion candle must be body-dominant (≥ 50% body/range).
+        # Wick-dominant closes show rejection, not committed delivery.
+        if not self._ifvg_close_is_body_dominant(candle):
+            return None
+
+        # Priority 4: strong close — must close ≥ 2pt beyond FVG far edge.
+        # Barely clipping the far edge = weak inversion. Want strong displacement.
+        if not self._ifvg_close_is_strong(ifvg, candle):
             return None
 
         # Require a real DOL target — no mechanical R-multiple fallback
@@ -587,6 +603,37 @@ class ConfluenceEngine:
         else:
             leg_low = min(x.low for x in leg_candles)
             return (c.high - leg_low) >= min_leg
+
+    # ── IFVG close quality filters ────────────────────────────────────────────
+
+    _MIN_BODY_DOMINANCE = 0.50   # body must be >= 50% of total candle range
+
+    def _ifvg_close_is_body_dominant(self, candle: Candle) -> bool:
+        """
+        Inversion candle must have a body >= 50% of total range.
+        Wick-dominant closes show rejection, not committed delivery.
+        """
+        total_range = candle.high - candle.low
+        if total_range <= 0:
+            return True   # flat candle — allow through (edge case)
+        body = abs(candle.close - candle.open)
+        return body / total_range >= self._MIN_BODY_DOMINANCE
+
+    _STRONG_INVERSION_MIN_PTS = 2.0   # minimum close beyond FVG far edge
+
+    def _ifvg_close_is_strong(self, ifvg: "IFVG", candle: Candle) -> bool:
+        """
+        Priority 4 (research synthesis): close must be ≥ 2pt beyond the FVG far edge.
+        Barely clipping the edge = weak inversion = likely failure.
+        Source: FfFt0L-NyDI + 9hmFnAbu5xo — "want strong displacement through".
+        """
+        fvg = ifvg.source_fvg
+        if ifvg.direction == IFVGDirection.BULLISH:
+            # Bearish FVG inversed: close must be 2pt above fvg.top
+            return (candle.close - fvg.top) >= self._STRONG_INVERSION_MIN_PTS
+        else:
+            # Bullish FVG inversed: close must be 2pt below fvg.bottom
+            return (fvg.bottom - candle.close) >= self._STRONG_INVERSION_MIN_PTS
 
     # Buffer below/above the sweep wick when placing SL
     _SL_BUFFER = 2.0
