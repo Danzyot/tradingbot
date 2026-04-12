@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from ..data.candle import Candle
-from ..detectors.sweep import Sweep, SweepDetector, SweepDirection, LiquidityLevel
+from ..detectors.sweep import Sweep, SweepDetector, SweepDirection, LiquidityLevel, LiqTier
 from ..detectors.fvg import FVG, FVGType, FVGTracker
 from ..detectors.ifvg import IFVGDetector, IFVG, IFVGDirection
 from ..detectors.cisd import CISDDetector, CISDSignal
@@ -69,14 +69,11 @@ class ConfluenceEngine:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    # Level kinds that are permanently consumed on first sweep (liquidity pool used up)
-    _PERMANENT_CONSUMED_KINDS = {"eqh", "eql"}
-
     def set_liquidity_levels(self, levels: list[LiquidityLevel]) -> None:
         """Update liquidity map (call whenever levels change).
 
-        EQH/EQL levels that were previously swept are filtered out permanently —
-        their liquidity pool has been consumed and price won't revisit them as a target.
+        Levels that were previously swept are permanently filtered — their liquidity
+        pool has been consumed and price won't revisit them as a target.
         """
         self._liquidity_levels = [
             lvl for lvl in levels
@@ -110,20 +107,6 @@ class ConfluenceEngine:
         new_sweeps = self.sweep_detector.detect(candle, self._liquidity_levels, candle_history=ltf_candles_1m)
         atr14 = self._compute_atr(ltf_candles_1m, period=14)
 
-        # Diagnostic: log every detected sweep before quality gates (set to True to enable)
-        _SWEEP_DIAGNOSTICS = False
-        if _SWEEP_DIAGNOSTICS and new_sweeps:
-            from ..filters.session import active_session as _active_session
-            for _s in new_sweeps:
-                _wl = _s.sweep_candle.low if _s.direction.value == "bullish" else _s.sweep_candle.high
-                _wick = abs(_wl - _s.level.price)
-                print(
-                    f"  SWEEP {_s.direction.value.upper()} | {_s.sweep_type.value} | "
-                    f"{_s.level.kind} {_s.level.tier.value} @ {_s.level.price:.2f} | "
-                    f"Wick: {_wick:.2f}pt | ATR14: {atr14:.1f} | "
-                    f"Time: {_s.ts.strftime('%m-%d %H:%M')} | "
-                    f"Session: {_active_session(_s.ts) or 'off-hours'}"
-                )
         for sweep in new_sweeps:
             # Cooldown: skip if same level was swept recently
             price_key = round(sweep.level.price, 2)
@@ -245,8 +228,6 @@ class ConfluenceEngine:
         - Bearish sweep (swept a high) → leg ascended FROM a prior swing LOW
         Returns the timestamp of that swing, or None if no swings are available.
         """
-        from ..detectors.swing import SwingType
-
         if not swings:
             return None
 
@@ -291,7 +272,6 @@ class ConfluenceEngine:
         Threshold scales with ATR — 30% of ATR(14), floored at 3pt.
         During volatile NY (ATR ~25) requires 7.5pt body; Asia (ATR ~8) requires 3pt.
         """
-        from ..detectors.sweep import SweepDirection
         ltf = candles_by_tf.get(1, [])
         if not ltf:
             return False
@@ -485,29 +465,6 @@ class ConfluenceEngine:
                         else sweep.sweep_candle.high),
         )
 
-    def _find_post_cisd_fvg(
-        self, setup: Setup, cisd: CISDSignal,
-        leg_fvgs: dict[int, list[FVG]], current_candle: Candle
-    ) -> Optional[tuple[FVG, int]]:
-        """Find an unmitigated FVG after CISD that price is currently retesting.
-        Returns (fvg, timeframe) or None."""
-        expected = (
-            FVGType.BULLISH if setup.direction == TradeDirection.LONG
-            else FVGType.BEARISH
-        )
-        for tf in [5, 3, 1]:
-            for fvg in reversed(leg_fvgs.get(tf, [])):
-                if fvg.kind != expected:
-                    continue
-                if fvg.ts < cisd.ts:
-                    continue
-                if fvg.mitigated:
-                    continue
-                # Price must be inside or touching the FVG CE
-                if fvg.bottom <= current_candle.close <= fvg.top:
-                    return fvg, tf
-        return None
-
     # ── Sweep quality gates ───────────────────────────────────────────────────
 
     # Base minimums — all scale up with ATR at runtime (see _compute_atr)
@@ -517,7 +474,7 @@ class ConfluenceEngine:
 
     # ATR multipliers — thresholds = max(base, atr * multiplier)
     _ATR_MULT_WICK       = 0.15   # 15% ATR for wick penetration (S/A-tier)
-    _ATR_MULT_WICK_B     = 0.25   # 25% ATR for wick penetration (B-tier — stricter, less reliable levels)
+    _ATR_MULT_WICK_B     = 0.20   # 20% ATR for wick penetration (B-tier — slightly stricter)
     _ATR_MULT_LEG        = 0.80   # 80% ATR for leg size
     _ATR_MULT_CLOSE      = 0.05   # 5% ATR for body return
 
@@ -551,8 +508,6 @@ class ConfluenceEngine:
             return False
 
         # B-tier levels (session H/L, swing H/L) require a larger wick — less reliable
-        from .base import TradeDirection
-        from ..detectors.sweep import LiqTier
         wick_mult = (
             self._ATR_MULT_WICK_B
             if sweep.level.tier == LiqTier.B

@@ -6,7 +6,13 @@ data/mes_1m.csv
 
 # Generated outputs
 data/journal.db
+data/journal.db-shm
+data/journal.db-wal
 data/screenshots/
+bt_*.txt
+
+# Transcript downloads (large, regenerable via yt-dlp)
+transcripts/
 
 # Python
 __pycache__/

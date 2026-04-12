@@ -16,9 +16,8 @@ import argparse
 from pathlib import Path
 from typing import Optional
 
-from ..data.candle import CandleBuffer
 from ..data.aggregator import MultiTFAggregator
-from ..data.history import load_csv, load_pair
+from ..data.history import load_csv
 from ..detectors.fvg import FVGTracker
 from ..detectors.swing import SwingDetector
 from ..detectors.smt import SMTDetector
@@ -32,8 +31,8 @@ from ..models.confluence import ConfluenceEngine
 from ..journal.logger import TradeJournal
 from ..journal.reporter import print_summary
 
-# Timeframes to track (minutes)
-TFS = [1, 3, 5, 15, 30, 60, 240]
+# Timeframes to track (minutes) — 2m and 4m added for IFVG TF priority coverage
+TFS = [1, 2, 3, 4, 5, 15, 30, 60, 240]
 
 # Swing lookback settings — CoWork confirmed from Nephew_Sam_ BoS/ChoCh label analysis
 # EQH/EQL uses left=2, right=2 on 15m data (structural swings, matches Nephew_Sam_ params)
@@ -46,6 +45,7 @@ LTF_SWING_RIGHT = 5
 
 # Minimum FVG size (points) for a gap to count as a liquidity level.
 # Too-small FVGs flood the level list with noise — only significant imbalances matter.
+# LTF (1-5m) FVGs are NOT liquidity sweep targets — size filter only used for HTF.
 MIN_FVG_SIZE: dict[int, float] = {15: 5.0, 30: 8.0, 60: 10.0, 240: 15.0}
 
 # Cap on how many unmitigated FVGs per TF are used as sweep targets.
@@ -110,10 +110,10 @@ def run_backtest(
     mes_by_ts = {c.ts: c for c in mes_candles}
 
     # ── Infrastructure ────────────────────────────────────────────────────────
-    # LTF (1m/3m/5m): expire FVGs after 30 bars — keeps only recent leg FVGs for IFVG detection
+    # LTF (< 15m): expire FVGs after 30 bars — keeps only recent leg FVGs for IFVG detection
     # HTF (15m+): no expiry — these are persistent liquidity levels, valid until mitigated
     fvg_trackers = {
-        tf: FVGTracker(timeframe=tf, inversion_window=30 if tf <= 5 else 0)
+        tf: FVGTracker(timeframe=tf, inversion_window=30 if tf < 15 else 0)
         for tf in TFS
     }
     swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)   # 1m, manipulation leg + SMT

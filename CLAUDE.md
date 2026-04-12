@@ -63,8 +63,6 @@ src/smc_bot/
     reporter.py       print_summary() — prints stats + account balance/drawdown from DB
     notion_client.py  NotionJournal — posts trades to Notion database
     discord_client.py DiscordClient — uploads screenshots via webhook, returns CDN URL
-    screenshot.py     Screenshot workflow helpers; chart_setup_params() returns all drawing data
-    imgur_client.py   ImgurClient — kept for reference, Discord is preferred
 
 data/
   nq_1m.csv           1,144,591 bars NQ 1m (2023-01-02 to 2026-04-08, from Databento)

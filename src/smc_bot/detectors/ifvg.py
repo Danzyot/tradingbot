@@ -57,32 +57,37 @@ class IFVG:
         return self.source_fvg.bottom
 
 
-# Priority order for timeframe selection (highest first)
-TF_PRIORITY = [5, 3, 1]
+# Priority order for timeframe selection (highest first).
+# 5m is the absolute max for IFVG — never take 15m+ IFVG (trade lifecycle too long).
+# All five LTF timeframes covered to find the highest available on the leg.
+TF_PRIORITY = [5, 4, 3, 2, 1]
 
 
 class IFVGDetector:
     """
     Monitors FVG trackers across multiple timeframes for a given sweep leg.
-    Returns the highest-TF IFVG when one forms.
+    Returns the highest-TF IFVG when ALL FVGs of that TF are inversed.
+
+    Rule: if the leg has multiple FVGs at the same (highest) TF, ALL must be
+    inversed before entry — the last inversion is the entry candle.
     """
 
     def __init__(self, fvg_trackers: dict[int, FVGTracker]):
-        """
-        fvg_trackers: {timeframe_minutes: FVGTracker}
-        Only timeframes in TF_PRIORITY (1, 3, 5) are checked for IFVG entries.
-        """
         self.trackers = fvg_trackers
 
     def check(
         self,
         candle: Candle,
         sweep: Sweep,
-        leg_fvgs: dict[int, list[FVG]],   # FVGs from the sweep leg, keyed by TF
+        leg_fvgs: dict[int, list[FVG]],
     ) -> IFVG | None:
         """
         Check if the current candle creates an IFVG from the sweep leg's FVGs.
-        Returns the highest-TF IFVG if found, else None.
+
+        Finds the highest TF that has FVGs of the expected kind on the leg.
+        ALL FVGs of that TF must be inversed (close beyond far edge) as of this
+        candle — the signal fires on the candle that inverses the last remaining one.
+        Lower TFs are not checked if a higher TF has any pending FVGs.
         """
         expected_fvg_kind = (
             FVGType.BEARISH if sweep.direction == SweepDirection.BULLISH
@@ -94,22 +99,42 @@ class IFVGDetector:
         )
 
         for tf in TF_PRIORITY:
-            fvgs = leg_fvgs.get(tf, [])
+            fvgs = [
+                f for f in leg_fvgs.get(tf, [])
+                if f.kind == expected_fvg_kind
+            ]
+            if not fvgs:
+                continue   # no FVGs of this TF on the leg — try lower TF
+
+            # This is the highest TF with FVGs. ALL must be inversed before entry.
+            inversed_this_candle: list[FVG] = []
+            all_clear = True
+
             for fvg in fvgs:
-                if fvg.kind != expected_fvg_kind:
-                    continue
-                # Skip FVGs mitigated on a PRIOR candle — the pool is already gone.
-                # But if mitigated on THIS candle, the mitigation IS the inversion event.
-                if fvg.mitigated and fvg.mitigated_ts != candle.ts:
-                    continue
                 if self._is_inversed(candle, fvg, ifvg_direction):
-                    return IFVG(
-                        source_fvg=fvg,
-                        direction=ifvg_direction,
-                        inversion_candle=candle,
-                        ts=candle.ts,
-                        timeframe=tf,
-                    )
+                    inversed_this_candle.append(fvg)
+                elif fvg.mitigated and fvg.mitigated_ts != candle.ts:
+                    pass   # pre-mitigated on a prior candle — counts as cleared
+                else:
+                    all_clear = False   # still active, not yet inversed
+                    break
+
+            if not all_clear:
+                # Highest TF has pending FVGs — don't drop to lower TF, just wait
+                return None
+
+            if not inversed_this_candle:
+                # All were pre-mitigated on prior candles, nothing to fire on now
+                return None
+
+            # Fire on the most recent FVG being inversed on this candle
+            return IFVG(
+                source_fvg=inversed_this_candle[-1],
+                direction=ifvg_direction,
+                inversion_candle=candle,
+                ts=candle.ts,
+                timeframe=tf,
+            )
 
         return None
 
