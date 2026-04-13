@@ -268,11 +268,12 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ---
 
-## Current State — Where We Left Off (last updated 2026-04-12)
+## Current State — Where We Left Off (last updated 2026-04-13)
 
 ### What was built across sessions (cumulative):
-- **SL fixed**: sweep candle wick (candle.low - 2.0 for longs, candle.high + 2.0 for shorts)
-- **120-min cooldown** on re-sweeping the same price level (`_swept_levels`)
+- **SL fixed**: `leg_extreme_candle` (actual manipulation wick extreme, 90-min capped) → `low - 2.0` for longs, `high + 2.0` for shorts. Separate from `sweep_candle` (close-back detection candle) which is only used for quality gate checks.
+- **RR-aware DOL target**: `_find_dol_targets` skips levels too close to satisfy `min_rr` given the real SL distance — no more 0.4R trades
+- **5-min sweep cooldown** (changed from 120 min)
 - **EQH/EQL tightened**: 0.25pt tolerance, S-tier (3+ touches), A-tier (2 touches + gap≥5)
 - **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges as sweep targets
 - **FVG size filter** (backtest.py): 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
@@ -303,11 +304,15 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 | 7 | Intermediate H/L as top-tier sweep targets | Partial |
 | 8 | HTF alignment gate (no bearish IFVG in bullish HTF) | ❌ Not yet |
 
-### Signal count status:
-- **Full Jan 2023 with all current filters**: 2 signals (Jan 03 SHORT loss, Jan 04 SHORT loss)
-- This is a dramatic drop from the original 9 — most were eliminated by the 45→90-min leg cap
-  and ATR-adaptive sweep quality gates, correctly filtering noise and stale leg signals
-- The original 9 signals had only 2W/7L (22% WR, -4.62R) — the filter reduction is correct direction
+### Signal count status (Q1 2023):
+| Month | Signals | W/L/BE | WR | Net R |
+|-------|---------|--------|-----|-------|
+| Jan 2023 | 20 | 8W/12L | 40% | -3.14R |
+| Feb 2023 | 15 | 8W/7L | 53% | +2.58R |
+| Mar 2023 | 9 | 3W/5L/1BE | 33% | -1.27R |
+| Q1 total | 44 | 19W/24L/1BE | 43% | -1.83R |
+- Signal count is in target range (9-20/month) ✓
+- Priority 8 (HTF alignment gate) would eliminate counter-trend trades → biggest remaining WR lever
 
 ### DB Concurrency Warning:
 Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use unique `db_path` per run:
@@ -317,9 +322,9 @@ run_backtest(..., db_path=Path('C:/tmp/bt_clean.db'), clear_db=True)
 Then copy result to data/journal.db once done.
 
 ### Next steps (in priority order):
-1. **Expand backtest to Feb/Mar/Apr 2023** — Jan 2023 only has 2 signals, need more data to validate
-2. **Implement Priority 6** (BE at first internal H/L) after signal quality validated
-3. **Implement Priority 8** (HTF alignment gate) — skip bearish IFVG when HTF clearly bullish
+1. **Implement Priority 8** (HTF alignment gate) — biggest WR lever; eliminates counter-trend fades
+2. **IFVG inversion speed gate** (< 4 candles from first FVG interaction) — per PB Trading video
+3. **Implement Priority 6** (BE at first internal H/L) after WR validated
 4. **Set NOTION_TOKEN** env var, then `python setup_notion.py` to sync trades to Notion
 
 ### Multi-agent setup:
