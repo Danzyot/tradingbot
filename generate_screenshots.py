@@ -253,6 +253,14 @@ def generate_chart(trade: dict, df_1m: pd.DataFrame) -> Path:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--db", type=Path, default=None, help="Path to SQLite journal DB")
+    args = parser.parse_args()
+    if args.db:
+        global DB_PATH
+        DB_PATH = args.db
+
     print("Loading NQ 1m data...")
     df_1m = pd.read_csv(NQ_CSV, parse_dates=["ts"], index_col="ts")
     df_1m.index = pd.DatetimeIndex(df_1m.index).tz_localize("UTC") if df_1m.index.tzinfo is None else df_1m.index

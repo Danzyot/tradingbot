@@ -57,10 +57,11 @@ class Sweep:
     ts: datetime
     direction: SweepDirection
     level: LiquidityLevel
-    sweep_candle: Candle
+    sweep_candle: Candle        # original close-back candle (body closes back inside level) — for quality gate checks
     sweep_type: SweepType = SweepType.GRAB   # default; SWEEP for multi-candle
     # The manipulation leg = candles from sweep_ts backward until prior structure
     leg_start_ts: Optional[datetime] = None
+    leg_extreme_candle: Optional[Candle] = None  # candle with the actual leg extreme wick — for SL placement
 
 
 class SweepDetector:

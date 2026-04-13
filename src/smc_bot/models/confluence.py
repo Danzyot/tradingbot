@@ -60,7 +60,7 @@ class ConfluenceEngine:
         # Cooldown: prevent the same price level from creating a new setup too quickly.
         # Maps rounded price → timestamp it was last swept.
         self._swept_levels: dict[float, datetime] = {}
-        self._SWEEP_COOLDOWN_MIN = 120   # 2 hours between sweeps of the same level
+        self._SWEEP_COOLDOWN_MIN = 5     # 5 min between sweeps of the same level (allow re-sweeps)
 
         # Permanently consumed levels — any major level, once swept, is gone.
         # The liquidity pool at that price has been taken. Price won't return to it as a target.
@@ -108,8 +108,19 @@ class ConfluenceEngine:
         atr14 = self._compute_atr(ltf_candles_1m, period=14)
 
         for sweep in new_sweeps:
-            # Cooldown: skip if same level was swept recently
             price_key = round(sweep.level.price, 2)
+
+            # ALWAYS invalidate any existing active setup near this level — even if we
+            # don't create a new setup (due to cooldown), the old leg is stale.
+            # Re-sweep = the prior manipulation leg is consumed; old FVGs no longer valid.
+            self._active_setups = [
+                s for s in self._active_setups
+                if abs(round(s.sweep.level.price, 2) - price_key) > 5.0
+            ]
+
+            # Cooldown: prevent the exact same level from creating a duplicate setup
+            # within a few minutes (same candle / same leg). 5 min is enough — we want
+            # re-sweeps after 5+ min to replace the old setup, not be blocked.
             if price_key in self._swept_levels:
                 elapsed = (now - self._swept_levels[price_key]).total_seconds() / 60
                 if elapsed < self._SWEEP_COOLDOWN_MIN:
@@ -117,10 +128,26 @@ class ConfluenceEngine:
             self._swept_levels[price_key] = now
 
             # Anchor the manipulation leg to the prior opposing swing point.
-            # Optional: if no swing found, allow setup but FVG scoping falls back.
             leg_start_ts = self._find_leg_start(sweep, swings_nq or [])
             if leg_start_ts:
                 sweep.leg_start_ts = leg_start_ts
+
+            # Find the ACTUAL manipulation leg extreme for SL placement.
+            # _check() fires on the close-back candle (body closes back inside level),
+            # which may NOT be the highest/lowest candle of the leg.
+            # We store the leg extreme separately as leg_extreme_candle — used ONLY for SL.
+            # sweep_candle stays as the original close-back candle for quality gate checks.
+            # Apply the same 90-min cap as FVGs — don't reach back more than 90 min.
+            from datetime import timedelta
+            _leg_cap_ts = sweep.ts - timedelta(minutes=self._MAX_LEG_LOOKBACK_MIN)
+            _effective_start = max(sweep.leg_start_ts, _leg_cap_ts) if sweep.leg_start_ts else _leg_cap_ts
+            leg_candles = [c for c in ltf_candles_1m
+                           if _effective_start <= c.ts <= sweep.ts]
+            if leg_candles:
+                if sweep.direction == SweepDirection.BEARISH:
+                    sweep.leg_extreme_candle = max(leg_candles, key=lambda c: c.high)
+                else:
+                    sweep.leg_extreme_candle = min(leg_candles, key=lambda c: c.low)
 
             # Quality gate 1: wick must penetrate the level meaningfully (no micro-taps)
             if not self._sweep_has_valid_penetration(sweep, atr14):
@@ -129,14 +156,6 @@ class ConfluenceEngine:
             # Quality gate 2: manipulation leg must be large enough (real directional move)
             if not self._leg_is_significant(sweep, ltf_candles_1m, atr14):
                 continue
-
-            # Invalidate any existing active setup for the same price area.
-            # If price re-sweeps a nearby level, the old setup's leg FVGs are stale.
-            # The new sweep supersedes — only the most recent leg matters.
-            self._active_setups = [
-                s for s in self._active_setups
-                if abs(round(s.sweep.level.price, 2) - price_key) > 5.0
-            ]
 
             setup = self._create_setup(sweep, now)
 
@@ -387,8 +406,11 @@ class ConfluenceEngine:
             fvg_bottom=ifvg.source_fvg.bottom,
             fvg_ts=ifvg.source_fvg.ts,
             fvg_kind=ifvg.source_fvg.kind.value if hasattr(ifvg.source_fvg.kind, 'value') else str(ifvg.source_fvg.kind),
-            sweep_wick=(setup.sweep.sweep_candle.low if setup.direction == TradeDirection.LONG
-                        else setup.sweep.sweep_candle.high),
+            sweep_wick=(
+                (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).low
+                if setup.direction == TradeDirection.LONG
+                else (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).high
+            ),
             smt_ts_a=setup.smt.ts_a if setup.smt else None,
             smt_price_a=(setup.smt.low_a or setup.smt.high_a) if setup.smt else None,
             smt_ts_b=setup.smt.ts_b if setup.smt else None,
@@ -456,8 +478,11 @@ class ConfluenceEngine:
             fvg_bottom=post_cisd_fvg.bottom,
             fvg_ts=post_cisd_fvg.ts,
             fvg_kind=post_cisd_fvg.kind.value if hasattr(post_cisd_fvg.kind, 'value') else str(post_cisd_fvg.kind),
-            sweep_wick=(setup.sweep.sweep_candle.low if setup.direction == TradeDirection.LONG
-                        else setup.sweep.sweep_candle.high),
+            sweep_wick=(
+                (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).low
+                if setup.direction == TradeDirection.LONG
+                else (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).high
+            ),
             smt_ts_a=setup.smt.ts_a if setup.smt else None,
             smt_price_a=(setup.smt.low_a or setup.smt.high_a) if setup.smt else None,
             smt_ts_b=setup.smt.ts_b if setup.smt else None,
@@ -501,8 +526,11 @@ class ConfluenceEngine:
             ts=now,
             entry_tf=1,
             confluence_desc=desc,
-            sweep_wick=(sweep.sweep_candle.low if setup.direction == TradeDirection.LONG
-                        else sweep.sweep_candle.high),
+            sweep_wick=(
+                (sweep.leg_extreme_candle or sweep.sweep_candle).low
+                if setup.direction == TradeDirection.LONG
+                else (sweep.leg_extreme_candle or sweep.sweep_candle).high
+            ),
         )
 
     # ── Sweep quality gates ───────────────────────────────────────────────────
@@ -535,19 +563,25 @@ class ConfluenceEngine:
 
     def _sweep_has_valid_penetration(self, sweep: "Sweep", atr14: float = 15.0) -> bool:
         """
-        Three checks on the sweep candle:
+        Three checks on the sweep:
         1. Wick extends >= max(3.0, atr14 * 0.15) pts beyond the level
+           → measured from the leg_extreme_candle (actual lowest/highest point of the leg)
         2. Wick through level is >= 20% of total candle range (pin bar shape)
+           → measured on the close-back candle (sweep_candle) which has a clear wick shape
         3. Body closes >= max(1.0, atr14 * 0.05) pts back inside the level
+           → measured on the close-back candle (body is always inside by design)
 
-        Thresholds scale with ATR — stricter during volatile NY sessions, looser during Asia.
+        Separating wick extent (leg extreme) from body return (close-back candle) ensures
+        that a multi-candle leg with a deep wick followed by a clean close-back still passes.
         """
-        c = sweep.sweep_candle
+        c = sweep.sweep_candle            # close-back candle — body is inside the level
+        ext = sweep.leg_extreme_candle or sweep.sweep_candle   # actual leg extreme
+
         total_range = c.high - c.low
         if total_range == 0:
             return False
 
-        # B-tier levels (session H/L, swing H/L) require a larger wick — less reliable
+        # B-tier levels require a larger wick — less reliable
         wick_mult = (
             self._ATR_MULT_WICK_B
             if sweep.level.tier == LiqTier.B
@@ -557,16 +591,16 @@ class ConfluenceEngine:
         min_close = max(self._BASE_MIN_CLOSE_RETURN, atr14 * self._ATR_MULT_CLOSE)
 
         if sweep.direction.value == "bullish":
-            wick_through = sweep.level.price - c.low
-            close_return = c.body_low - sweep.level.price
+            wick_through = sweep.level.price - ext.low   # leg extreme → deepest wick
+            close_return = c.body_low - sweep.level.price  # close-back candle body
             return (
                 wick_through >= min_wick
                 and (c.lower_wick / total_range) >= self._MIN_WICK_BODY_RATIO
                 and close_return >= min_close
             )
         else:
-            wick_through = c.high - sweep.level.price
-            close_return = sweep.level.price - c.body_high
+            wick_through = ext.high - sweep.level.price  # leg extreme → highest wick
+            close_return = sweep.level.price - c.body_high  # close-back candle body
             return (
                 wick_through >= min_wick
                 and (c.upper_wick / total_range) >= self._MIN_WICK_BODY_RATIO
@@ -654,19 +688,27 @@ class ConfluenceEngine:
         """
         entry = candle.close
 
+        # Use leg_extreme_candle for SL (actual wick extreme) if available,
+        # else fall back to sweep_candle (the close-back detection candle)
+        sl_candle = setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle
         if setup.direction == TradeDirection.LONG:
-            sl = setup.sweep.sweep_candle.low - self._SL_BUFFER
-            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=True)
+            sl = sl_candle.low - self._SL_BUFFER
+            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=True, sl=sl, min_rr=self.min_rr)
         else:
-            sl = setup.sweep.sweep_candle.high + self._SL_BUFFER
-            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=False)
+            sl = sl_candle.high + self._SL_BUFFER
+            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=False, sl=sl, min_rr=self.min_rr)
 
         return sl, tp1, tp2, tp1_label
 
     def _find_dol_targets(
-        self, entry: float, above: bool
+        self, entry: float, above: bool, sl: float = 0.0, min_rr: float = 0.0
     ) -> tuple[Optional[float], Optional[float], Optional[str]]:
-        """Return the two nearest liquidity levels on the target side + kind of TP1."""
+        """Return DOL targets on the target side.
+
+        When sl and min_rr are provided, skips targets that don't meet the RR
+        requirement — picks the NEAREST level that gives >= min_rr return.
+        The first qualifying level is TP1; the next qualifying level beyond that is TP2.
+        """
         candidates = []
         for level in self._liquidity_levels:
             if above and level.price > entry + self._MIN_TP_POINTS:
@@ -682,9 +724,21 @@ class ConfluenceEngine:
         else:
             candidates.sort(key=lambda x: x[0], reverse=True)
 
-        tp1_price = candidates[0][0] if candidates else None
-        tp1_label = f"{candidates[0][1]} ({candidates[0][2].value})" if candidates else None
-        tp2_price = candidates[1][0] if len(candidates) > 1 else None
+        # If RR filtering requested, skip levels that don't meet minimum RR
+        if min_rr > 0.0 and sl != 0.0:
+            risk = abs(entry - sl)
+            qualifying = [c for c in candidates if risk > 0 and abs(c[0] - entry) / risk >= min_rr]
+            if not qualifying:
+                return None, None, None
+            tp1 = qualifying[0]
+            tp2 = qualifying[1] if len(qualifying) > 1 else None
+        else:
+            tp1 = candidates[0]
+            tp2 = candidates[1] if len(candidates) > 1 else None
+
+        tp1_price = tp1[0]
+        tp1_label = f"{tp1[1]} ({tp1[2].value})"
+        tp2_price = tp2[0] if tp2 else None
         return tp1_price, tp2_price, tp1_label
 
     def _calc_rr(self, entry: float, sl: float, tp1: float) -> float:
