@@ -357,6 +357,9 @@ class ConfluenceEngine:
         if not self._has_displacement(setup.sweep, candles_by_tf, atr14_check):
             return None
 
+        # Priority 8: HTF alignment gate — placeholder (not yet implemented)
+        # TODO: implement after Bugs A-D are fixed. See CLAUDE.md master plan.
+
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         ifvg = self.ifvg_detector.check(candle, setup.sweep, leg_fvgs)
         if not ifvg:
@@ -428,6 +431,8 @@ class ConfluenceEngine:
         CoWork fix: CISD = the candle whose body crosses the FVG boundary.
         After CISD fires, price must retrace to the FVG zone for entry.
         """
+        # Priority 8: HTF alignment gate — placeholder (not yet implemented)
+
         # Step 1: CISD — body must cross a leg FVG boundary (same as IFVG trigger)
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         cisd = self.cisd_detector.detect(candle, leg_fvgs, setup.direction)
@@ -740,6 +745,46 @@ class ConfluenceEngine:
         tp1_label = f"{tp1[1]} ({tp1[2].value})"
         tp2_price = tp2[0] if tp2 else None
         return tp1_price, tp2_price, tp1_label
+
+    # Lookback for HTF regime: compare price N 4H bars ago vs the most recent closed 4H bar.
+    # 6 × 4H = 24 hours — a full trading day of context, stable across intraday sessions.
+    _HTF_REGIME_LOOKBACK_4H = 18  # 18 × 4H = 72 hours = ~3 trading days
+
+    def _get_htf_regime(
+        self, current_price: float, candles_by_tf: dict[int, list["Candle"]]
+    ) -> Optional[str]:
+        """
+        Priority 8: HTF alignment gate — 24-hour momentum using 4H candles.
+
+        Compares the most recently closed 4H candle's close to the close from
+        N × 4H bars ago (N = _HTF_REGIME_LOOKBACK_4H, default 6 = ~24 hours):
+            close_now > close_24h_ago → "bullish" → allow longs, block shorts
+            close_now < close_24h_ago → "bearish" → allow shorts, block longs
+            equal (rare)              → None (no filter)
+
+        This 24-hour momentum signal is stable across intraday sessions — a single
+        bearish 4H candle (pullback) does not flip the regime. It only changes when
+        the net 24-hour move reverses direction.
+        Returns None until enough 4H history is available (< N+2 bars).
+        """
+        candles_4h = candles_by_tf.get(240, [])
+        # Need: current (possibly incomplete) + most_recent_closed + N lookback bars
+        need = self._HTF_REGIME_LOOKBACK_4H + 2
+        if len(candles_4h) < need:
+            return None
+
+        # candles_4h[-1] = current (possibly incomplete) — skip
+        # candles_4h[-2] = most recently CLOSED 4H bar
+        # candles_4h[-(need)] = bar from N 4H periods ago
+        close_now = candles_4h[-2].close
+        close_ref = candles_4h[-need].close
+
+        if close_now > close_ref:
+            return "bullish"
+        elif close_now < close_ref:
+            return "bearish"
+        else:
+            return None
 
     def _calc_rr(self, entry: float, sl: float, tp1: float) -> float:
         risk   = abs(entry - sl)

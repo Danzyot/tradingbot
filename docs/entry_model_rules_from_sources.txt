@@ -1,0 +1,455 @@
+================================================================================
+ENTRY MODEL RULES (FROM SOURCES)
+Synthesized from: BionicNQ slides, PB Trading transcripts, FKTBkTzsmUA,
+FNnO_KQog7M, izEssD26q0Q, k-26aPpVXak, hJHkpHrH004, uDJI2AbyyCs,
+xYQqgeXox10, VOAL3J_Vobg, YESqIoA7Wyg, CHIK5oBRKiw, FfFt0L-NyDI,
+U8xH2dEgH5A, ict_slides.txt, full_study.txt, + online ICT/SMC sources
+================================================================================
+
+========================================================================
+A. IFVG INVERSION TRIGGER
+   What EXACTLY constitutes a valid IFVG inversion?
+========================================================================
+
+RULING: CANDLE BODY CLOSE beyond the FVG far edge. NOT wicks.
+
+Source evidence:
+
+1. BionicNQ (full_study.txt, primary educator):
+   "I don't want a weak close. I don't want to close with a huge wick at
+    the top. I want a body close so far above this gap. It literally just
+    disrespects the gap."
+
+   "We get like a 20 point close above."
+
+   "Did we close above by a tick or did we close above by a few points?
+    Like is it just a very tiny tiny close or is it obvious? Is it noticeable?"
+
+2. BionicNQ ict_slides.txt (The Close/Entry section):
+   "Is the candle mainly a body or mainly a wick"
+   "The close above/below the FVG"
+   "Avoid closes that are only a few ticks through the FVG"
+   "BODIES TELL STORY - WICKS DO DAMAGE"
+
+3. BionicNQ ict_slides.txt (The Stop Hunt section):
+   "A Stop Hunt/Sweep that prints a wick at the high or low
+    (no candle body closure above)"
+   -- This confirms wick = sweep/damage, body close = directional signal
+
+4. BionicNQ bad example:
+   "Barely closes through FVG" + "Huge reversal wick" = FAIL
+   vs. "2 candle close - big displacement" + "Mainly body" = PASS
+
+5. Online consensus (TrinityTrading, Tradezella):
+   "A simple touch or wick through the gap does not create an IFVG.
+    Price must close fully beyond the gap boundaries."
+   "Entry on candle closure through IFVG if there is clear displacement"
+
+ACTIONABLE RULE FOR CODE:
+  - LONG (bearish FVG inversion): candle.body_high > fvg.top
+    (i.e., candle CLOSE > fvg.top for a green candle)
+  - SHORT (bullish FVG inversion): candle.body_low < fvg.bottom
+    (i.e., candle CLOSE < fvg.bottom for a red candle)
+  - The close must be MEANINGFULLY beyond, not just 1 tick:
+    current bot uses >= 2pt, which aligns with sources
+  - Body must dominate the candle (body >= 50% of total range):
+    current bot checks this, which aligns with "mainly a body" rule
+  - Wicks alone do NOT count as inversion
+
+STATUS: Current bot implementation is CORRECT.
+
+
+========================================================================
+B. ENTRY TIMING
+   Entry at close of inversion candle, or wait for pullback?
+========================================================================
+
+RULING: MARKET ORDER at the CLOSE of the inversion candle. No waiting.
+
+Source evidence:
+
+1. BionicNQ ict_slides.txt (The Close/Entry section):
+   "Once closed, immediately market order your entry."
+   "Setting a limit order, may get preferred RR, but will make you miss
+    setups in the long run."
+
+2. BionicNQ (full_study.txt):
+   "Enter here" (pointing to inversion candle close in every example)
+   "I had my stop loss below the gap and I targeted this 15 minute"
+   -- Consistent pattern: entry is AT the close, not after retest
+
+3. BionicNQ acknowledges a retest alternative exists but does NOT use it:
+   "I could look to trade it in here on the open of the next higher time
+    frame candle" -- but this is described as a separate, more conservative
+    approach for when the inversion candle is bearish/unconvincing
+
+4. Online (Tradezella):
+   Two approaches documented:
+   - Aggressive: "Market order when you see the IFVG form"
+   - Conservative: "Limit order inside the IFVG zone, wait for retest"
+   BionicNQ explicitly uses the aggressive approach.
+
+5. BionicNQ (full_study.txt) on when NOT to enter at close:
+   "If we don't have a candle which supports expansion... we're then
+    waiting for a candle two to form."
+   -- Exception: when the inversion candle itself is unconvincing (bearish
+      close when expecting bullish move), wait for next HTF candle open.
+
+EXCEPTION SCENARIO (from transcripts):
+   If the inversion candle is a COUNTER-DIRECTION candle (e.g., bearish
+   candle body closing above a bearish FVG for a long), BionicNQ says:
+   "I'm not expecting it to be an expansion candle. I'm just expecting it
+    to go back towards its opening price and form a reversal candle."
+   In this case, wait for the NEXT HTF candle open.
+
+ACTIONABLE RULE FOR CODE:
+  - Primary: entry = market order at inversion candle close price
+  - No pullback/retest waiting in the primary model
+  - The "wait for next candle" exception is too discretionary to code
+    reliably; the body-dominance filter already eliminates most of these
+    cases (a bearish candle closing above a gap would fail body >= 50%)
+
+STATUS: Current bot implementation is CORRECT.
+
+
+========================================================================
+C. TIMEFRAME PRIORITY FOR IFVG
+   Which TF's FVGs take priority? Must ALL of that TF invert?
+========================================================================
+
+RULING: HIGHEST TF first (5m > 4m > 3m > 2m > 1m). BionicNQ is very
+clear that higher TF inversions carry more weight and lower TF inversions
+alone are "bare minimum" setups.
+
+Source evidence:
+
+1. BionicNQ ict_slides.txt (The Bare Minimum PO3):
+   "Only trade PO3 with 15m+ or 5m sponsored FVGs (BEST FIX)"
+   "1m swing/5m FVG PDI model is notorious for this"
+   -- 1m swing / 5m gap = bare minimum, not preferred
+
+2. BionicNQ ict_slides.txt (HTF Sponsorship):
+   "HTF manipulation that distributes, creating a sponsored LTF LEG"
+   "'Only 1 gap is sponsored'... The entire LEG is sponsored"
+   -- The entire manipulation leg's FVGs matter, not just one
+
+3. BionicNQ ict_slides.txt (The Bare Minimum IFVG):
+   "1m swing/5m FVG mech model is famous for this"
+   "Only trade with A/A+ LTF structure"
+   -- Again: 1m/5m is bare minimum; higher TF preferred
+
+4. BionicNQ (full_study.txt) on close speed relative to TF:
+   "I'm not expecting like a five minute fair value gap to close like on
+    the first candle. I usually let two to three candles relative to that
+    time frame to close."
+   "If it's a one minute fair value gap, I would give the inversion like
+    3 minutes max four."
+   -- Higher TF FVGs naturally take longer; this is expected
+
+5. BionicNQ (full_study.txt) on multiple FVGs:
+   "There are multiple fair value gaps here. So, in this case, I want to
+    use all of those fair value gaps and treat it like one big fair value
+    gap. And you can see we do not go and just close through it."
+   -- ALL FVGs must be cleared, not just one
+
+6. BionicNQ (full_study.txt) on 15m/30m context:
+   "High time frame PDA, I'm really just going to be using 15 minute fair
+    value gaps, 30 minute fair value gaps. Maybe an hourly."
+   -- HTF FVGs (15m+) for key levels/bias; LTF (1-5m) for entry
+
+ACTIONABLE RULE FOR CODE:
+  - TF_PRIORITY = [5, 4, 3, 2, 1] (current implementation)
+  - Find the HIGHEST TF that has FVGs on the manipulation leg
+  - ALL FVGs of that highest TF on the leg must invert before entry fires
+  - If no FVGs exist at highest TF, fall to next TF down
+  - "Treat it like one big fair value gap" = all gaps of same TF on
+    the leg must be closed through
+  - Speed gate: inversion should complete within ~3x the TF in candle
+    count (e.g., 5m FVG: allow ~3 five-minute candles = 15 1m candles)
+
+STATUS: Current bot implementation (Priority 1+2) is CORRECT.
+  The "all FVGs of highest TF must invert" rule is implemented.
+
+
+========================================================================
+D. BREAKEVEN WITH LIQUIDITY
+   When to move SL to breakeven? Does intermediate liquidity trigger BE?
+========================================================================
+
+RULING: BE is CONDITIONAL and discretionary. Not automatic at 1R.
+
+Source evidence:
+
+1. BionicNQ ict_slides.txt (The Close/Entry section):
+   "Go BE only when reversal probability is high (HTF FVG, SMT, ERL)
+    and weigh conviction against LTF liq/imb for a decision on BE"
+   "Closures that jeopardize RR or close BE can be avoided"
+   "I usually take them if High Conviction and hold for 1:1 n pray for
+    no BE"
+
+2. BionicNQ (full_study.txt):
+   "I got my one to one and I was out of there."
+   -- In this case, 1:1 was the TP, not the BE trigger
+
+3. BionicNQ (full_study.txt) on conviction vs targets:
+   "You could have taken a TP here, right? This could be low hanging fruit.
+    Now, in this scenario, I actually didn't take low hanging fruit, but
+    that's because my conviction was so high."
+   -- High conviction = hold past intermediate levels
+   -- Low conviction = take low-hanging fruit early
+
+4. Tradezella (Josh's IFVG model):
+   "If the first internal liquidity is hit and no further displacement
+    occurs, assume we're rotating and protect capital."
+
+5. Online general ICT:
+   "Once price moves favorably by 1:1 risk-reward, consider moving your
+    stop to breakeven."
+
+ACTIONABLE RULE FOR CODE:
+  For a mechanical bot (no discretion), implement as:
+
+  - DO NOT auto-BE at 1R blindly
+  - Instead: scan for OPPOSING liquidity levels between entry and TP
+  - If an opposing major level exists between entry and TP:
+    * If price reaches that level, TAKE PARTIAL or FULL TP there
+    * Move SL to breakeven
+  - If NO opposing liquidity between entry and TP:
+    * Let the trade run to full TP
+    * BE trigger at 1R as safety fallback
+  - Opposing liquidity = PDH/PDL, session H/L, EQH/EQL, HTF FVG edge
+    that could cause reversal
+
+  Simplified mechanical version (recommended for bot):
+  - be_trigger_r = 1.0 (current) as MINIMUM safety
+  - If opposing ERL exists between entry and TP at < 1R distance:
+    adjust TP to that level instead (already handled by DOL logic)
+  - Priority 6 (BE at first internal H/L) from CLAUDE.md is
+    LOWER priority and should be tested separately
+
+STATUS: Current bot uses be_trigger_r=1.0 which is a reasonable
+  mechanical approximation. The discretionary "reversal probability"
+  assessment cannot be fully automated.
+
+
+========================================================================
+E. SWEEP QUALITY
+   What makes a valid sweep vs a random spike/micro-tap?
+========================================================================
+
+RULING: A valid sweep requires (1) wick penetration beyond the level,
+(2) body closes BACK INSIDE the range, (3) context of WHERE it happens
+(HTF key level), and (4) fast reaction / displacement after.
+
+Source evidence:
+
+1. BionicNQ ict_slides.txt (The Stop Hunt):
+   "A Stop Hunt/Sweep that prints a wick at the high or low
+    (no candle body closure above)"
+   "Shows most strength through a fast reaction -> distribution (IFVG)"
+   "SL should offer 0 open liquidity and 0 unmitigated imbalances"
+   "Stop Hunt into/inside HTF Key Level (FVG)"
+   "Ideally sweeps an Accumulation"
+   "Bonus Points if Sweep is after HTF candle opens (PO3)"
+
+2. BionicNQ ict_slides.txt (Mastering Manipulation):
+   "HTF Key Level + Significant Liquidity Sweep + SMT (cherry on top)"
+   "BODIES TELL STORY - WICKS DO DAMAGE"
+   -- Sweep = wick damage (long wick, small body at the extreme)
+   -- Distribution = body tells story (displacement candle after)
+
+3. BionicNQ ict_slides.txt (The Stop Hunt examples):
+   PASS: "First entry - 0 Stop Hunt/Open Liq SL - Discount/Bottom of range"
+         "Second Entry - HR SL - more engineered targets"
+   FAIL: "No Stop hunt - Fomo/DoL focused"
+   FAIL: "5m closes slow, leaves LR, and 0 stop hunt"
+
+4. BionicNQ (full_study.txt):
+   "Clean stop hunt, hit the hourly gap, super good inversion"
+   "This is not just a random high, a random low. This can be session
+    liquidity, previous day highs and lows or significant swings"
+
+5. BionicNQ (full_study.txt) on what the sweep MUST hit:
+   "What what's like that criteria that you're looking for? Number one
+    thing is going to be that high time frame key level. This will be like
+    15-minute fair value gaps, 30 minute fair value gaps, 4 hour fair
+    value gaps."
+
+6. Online (general ICT):
+   "The body of the candle must close back inside the previous trading
+    range. If the body closes outside the range, it's a breakout, not
+    a sweep."
+   "Sweeps create large wicks, while displacement creates large bodies.
+    Mostly wick = sweep. Mostly body = displacement."
+
+ACTIONABLE RULES FOR CODE:
+
+  Sweep candle requirements:
+  1. Wick penetrates beyond the liquidity level price
+  2. Body closes BACK INSIDE (body_low >= level for bearish sweep,
+     body_high <= level for bullish sweep) -- ALREADY IMPLEMENTED
+  3. Body dominance: body >= 50% of candle range -- ALREADY IMPLEMENTED
+     (actually this should be WICK dominant for sweep candle, not body
+      dominant -- see note below)
+  4. The level being swept must be a significant level:
+     - HTF FVG edge (15m+)
+     - PDH/PDL
+     - Session H/L
+     - EQH/EQL (S or A tier)
+     - NOT random 1m swing highs/lows alone
+
+  IMPORTANT CORRECTION: For SWEEP candles specifically, the candle should
+  be WICK-dominant (large wick showing rejection), not body-dominant.
+  "Sweeps create large wicks" / "mostly wick = sweep"
+  The body-dominance check should apply to the INVERSION candle, not
+  the sweep candle. The sweep candle should show REJECTION (big wick).
+
+  Post-sweep requirements:
+  5. Fast reaction: displacement should follow within a few candles
+  6. At least 1 body-dominant reversal candle within 20 bars -- IMPLEMENTED
+  7. Sweep happens at/near an HTF key level (FVG, OB)
+  8. No open liquidity behind the SL (nothing to re-sweep)
+
+  Quality tiers for sweep:
+  - A+: Sweeps accumulation (multiple touches), at HTF FVG, with SMT,
+        after HTF candle open (PO3), immediate displacement
+  - A: Sweeps significant level (PDH/PDL, session, EQH/EQL), at HTF FVG
+  - B: Sweeps minor level, some displacement
+  - FAIL: No clear level swept, slow reaction, body closes beyond level
+
+STATUS: Mostly correct. The sweep candle body >= 50% filter may be
+  WRONG for the sweep candle itself. Sweep candles should show
+  REJECTION (wick-heavy), while the INVERSION candle should be
+  body-dominant. Review sweep.py _check() body dominance logic.
+
+
+========================================================================
+F. RISK-REWARD MANAGEMENT
+   Fixed 1R, or next major liquidity level?
+========================================================================
+
+RULING: TP at the NEXT MAJOR LIQUIDITY LEVEL (low-resistance liquidity),
+not a fixed R multiple. BionicNQ focuses on "low hanging fruit" and
+"engineered liquidity."
+
+Source evidence:
+
+1. BionicNQ (full_study.txt):
+   "I can take the lowhanging fruit for this two RR trade and be
+    completely fine."
+   "I got my one to one and I was out of there."
+   -- Takes whatever the first clean target gives, even if 1:1
+
+2. BionicNQ (full_study.txt) on targets:
+   "Number one thing that I love to target is engineered highs. Always
+    a great target. Low resistance liquidity runs happen on these."
+   "Another one could be data highs."
+   "Another one could be like an imbalance, like a high within a
+    15 minute gap."
+   "Focus on HTF Liquidity pools such as ITH/ITL, PDH/PDL, Data
+    Highs/Data Lows, Session Liquidity"
+
+3. BionicNQ ict_slides.txt (The Distribution):
+   "Low Hanging Fruit" = "Obvious Liquidity pools, the Low resistance
+    OF Low resistance"
+   "High/Low that has to be taken in order to fulfill HTF DoL"
+   "Targets align with HTF IRL<->ERL phase"
+   "Unswept Liquidity - Unmitigated FVG(s)"
+   "Previously Manipulated Liquidity -> Led to Distribution"
+
+4. BionicNQ (full_study.txt) on target selection:
+   "We have three swings before our full draw. That's perfect liquidity."
+   "You could have taken a TP here. This could be low hanging fruit."
+   "Definitely not this high just because the RR would be horrible"
+   -- Target selection considers both the level quality AND the RR
+
+5. BionicNQ (full_study.txt) on IRL to ERL:
+   "IRL to ERL emphasis. I'm entering on the IRL, targeting the ERL."
+   "What are we doing? We already swept. Then what did we do? We tapped
+    into IRL, internal range liquidity, which is that fair value gap.
+    And where are we going? To external range liquidity."
+
+6. Online (TrinityTrading):
+   "Minimum acceptable R:R on an IFVG trade: 1:2"
+   "First target: next area of liquidity in direction of your trade"
+
+ACTIONABLE RULES FOR CODE:
+
+  Target selection priority (in order):
+  1. FIRST: Find the Draw on Liquidity (DOL) -- the HTF external range
+     liquidity target (PDH/PDL, session extremes, data H/L, ITH/ITL)
+  2. THEN: Check for "low-hanging fruit" = the FIRST significant
+     opposing liquidity level between entry and DOL
+  3. If low-hanging fruit exists and gives >= 1R, use it as TP1
+  4. If low-hanging fruit gives < 1R, SKIP THE TRADE (don't force it)
+  5. min_rr = 1.0 as absolute floor (BionicNQ took 1:1 multiple times)
+  6. Ideal RR = 2:1+ when DOL is clear and path is unobstructed
+
+  Target types ranked (best to worst):
+  - Engineered highs/lows (multiple swing touches, ascending/descending)
+  - Data highs/lows (news candle extremes)
+  - PDH/PDL
+  - Session H/L
+  - EQH/EQL
+  - HTF FVG CE (consequent encroachment)
+  - Random swing H/L (worst, avoid if possible)
+
+  Key principle: "LRL only" (Low Resistance Liquidity)
+  - Target should be on a path with minimal opposing structure
+  - Multiple swing points stacking toward target = A+ target
+  - Isolated random high with no structural draw = bad target
+
+STATUS: Current bot implementation (hard DOL requirement, LRL only,
+  min_rr=1.0) is CORRECT and aligns with sources.
+
+
+========================================================================
+SUMMARY: WHAT NEEDS CHANGING IN THE BOT
+========================================================================
+
+CONFIRMED CORRECT (no changes needed):
+  [x] IFVG inversion = body close beyond far edge (not wick)
+  [x] Entry = market order at inversion candle close
+  [x] TF_PRIORITY = [5,4,3,2,1], highest TF wins
+  [x] All FVGs of highest TF on leg must invert
+  [x] Strong close >= 2pt beyond far edge
+  [x] Body dominance >= 50% on inversion candle
+  [x] TP at next major liquidity level (LRL)
+  [x] min_rr = 1.0
+
+POTENTIAL ISSUES TO INVESTIGATE:
+  [!] Sweep candle body dominance filter (sweep.py):
+      Currently requires body >= 50% on sweep candle.
+      Sources say sweep candles should be WICK-HEAVY (rejection).
+      The body-dominance check makes sense for INVERSION candles
+      but may be filtering out valid sweeps that show rejection wicks.
+      RECOMMENDATION: Remove or invert body dominance check on sweep
+      candle. A sweep candle with a big wick and small body is IDEAL.
+
+  [!] BE logic (be_trigger_r=1.0):
+      BionicNQ says BE should be conditional on reversal probability,
+      not automatic at 1R. Current implementation is a reasonable
+      mechanical approximation but may cause premature exits.
+      RECOMMENDATION: Keep as-is for now; Priority 6 (BE at first
+      internal H/L) would be more aligned with sources.
+
+  [!] Inversion speed gate:
+      BionicNQ says 3-4 candles max relative to the FVG timeframe.
+      "5+ becomes iffy" (ict_slides.txt)
+      "It should be one to two. Anything more than three and I'm like
+       all right, what are we doing"
+      RECOMMENDATION: Implement max_inversion_candles based on FVG TF:
+      - 1m FVG: max 3-4 one-minute candles to invert
+      - 5m FVG: max 3 five-minute candles (= 15 one-minute candles)
+      This is listed as next priority in CLAUDE.md.
+
+  [!] Sweep must happen at HTF key level:
+      Sources heavily emphasize that the sweep must occur at a
+      significant HTF level (15m+ FVG, PDH/PDL, etc.), not just
+      any random swing. Current bot sweeps S/A/B tiers which
+      partially covers this, but the HTF FVG co-location is not
+      strictly required.
+
+========================================================================
+END OF DOCUMENT
+========================================================================

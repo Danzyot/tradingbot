@@ -296,13 +296,38 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 | # | Change | Status |
 |---|--------|--------|
 | 1 | TF_PRIORITY = [5,4,3,2,1] + 2m/4m trackers | ✅ Done |
-| 2 | All FVGs of same TF on leg must invert | ✅ Done |
-| 3 | Sweep candle body ≥ 50% of range | ✅ Done |
+| 2 | All FVGs of same TF on leg must invert | ✅ Done (but see Bug B below) |
+| 3 | Sweep candle body ≥ 50% of range | ❌ WRONG — remove this filter (see Bug C) |
 | 4 | Strong IFVG close ≥ 2pt beyond far edge | ✅ Done |
 | 5 | DOL = LRL only | ✅ Done |
-| 6 | BE at first internal H/L (not at 1R) | ❌ Not yet (lower priority) |
+| 6 | BE at first internal H/L (not at 1R) | ❌ Not yet |
 | 7 | Intermediate H/L as top-tier sweep targets | Partial |
-| 8 | HTF alignment gate (no bearish IFVG in bullish HTF) | ❌ Not yet |
+| 8 | HTF alignment gate (4H 72h momentum) | ⚠️ Written but not committed — needs tuning |
+
+### CONFIRMED BUGS (from agent code review 2026-04-14):
+
+**Bug A — Mitigation race / late entry** (`detectors/fvg.py`, `detectors/ifvg.py`)
+- Root cause: `fvg_trackers[tf].update()` runs BEFORE `engine.update()` in backtest loop
+- When the inversion candle also mitigates the FVG, `_check_mitigation` removes the FVG from `tracker.active` BEFORE the IFVG detector sees it
+- Result: signal fires on a LATER candle (or not at all for that FVG), giving terrible RR
+- Fix: In `_collect_leg_fvgs` and `_update_leg_fvgs`, also include FVGs from `tracker.mitigated` where `fvg.mitigated_ts == current_candle.ts`
+
+**Bug B — Mitigation ≠ Inversion (false "cleared" status)** (`detectors/ifvg.py` line ~116)
+- Root cause: `IFVGDetector.check()` treats a mitigated FVG as "cleared" for the "all must invert" rule
+- Mitigation uses `body_high > fvg.top` (= open for bearish candle). A bearish candle with `open > fvg.top` but `close < fvg.top` mitigates the FVG without inverting it
+- Next candle sees `fvg.mitigated and fvg.mitigated_ts != candle.ts` → counts as cleared → can fire signal when close never exceeded FVG edge
+- This explains the "candle didn't close over FVG" trades in screenshots
+- Fix: Track inversion explicitly. Only count FVG as cleared if `close > fvg.top` (long) or `close < fvg.bottom` (short) was observed on a prior candle. Add `inverted: bool` flag to FVG, set only on inversion, not on mitigation
+
+**Bug C — Wrong filter on sweep candle** (`detectors/sweep.py` `_check()`)
+- Root cause: Body ≥ 50% filter applied to the SWEEP candle. But sweep candles should show REJECTION (big wick, small body). Sources confirm: "WICKS DO DAMAGE" on sweep candles, "BODIES TELL STORY" on inversion candles
+- This filter is filtering out VALID high-wick rejection sweeps
+- Fix: Remove body dominance check from `sweep.py _check()`. Body dominance stays only on IFVG inversion candle (already in `_ifvg_close_is_body_dominant`)
+
+**Bug D — Mixed-candle wick quality check** (`models/confluence.py` `_sweep_has_valid_penetration`)
+- Root cause: Wick penetration uses `leg_extreme_candle`, but pin-bar shape check uses `sweep_candle` — two different candles for different sub-checks
+- A deep wick from a prior candle on the leg can satisfy the wick depth requirement while the actual sweep candle barely ticked the level
+- Fix: Both checks should use the same candle. Require `sweep_candle` itself to have minimum wick penetration. `leg_extreme_candle` only used for SL placement
 
 ### Signal count status (Q1 2023):
 | Month | Signals | W/L/BE | WR | Net R |
@@ -311,8 +336,7 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 | Feb 2023 | 15 | 8W/7L | 53% | +2.58R |
 | Mar 2023 | 9 | 3W/5L/1BE | 33% | -1.27R |
 | Q1 total | 44 | 19W/24L/1BE | 43% | -1.83R |
-- Signal count is in target range (9-20/month) ✓
-- Priority 8 (HTF alignment gate) would eliminate counter-trend trades → biggest remaining WR lever
+- NOTE: These numbers contain false signals from Bugs A/B/C/D above. Real quality will shift after fixes.
 
 ### DB Concurrency Warning:
 Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use unique `db_path` per run:
@@ -321,11 +345,58 @@ run_backtest(..., db_path=Path('C:/tmp/bt_clean.db'), clear_db=True)
 ```
 Then copy result to data/journal.db once done.
 
-### Next steps (in priority order):
-1. **Implement Priority 8** (HTF alignment gate) — biggest WR lever; eliminates counter-trend fades
-2. **IFVG inversion speed gate** (< 4 candles from first FVG interaction) — per PB Trading video
-3. **Implement Priority 6** (BE at first internal H/L) after WR validated
-4. **Set NOTION_TOKEN** env var, then `python setup_notion.py` to sync trades to Notion
+### MASTER PLAN — Next steps (priority order, do NOT start without reading this):
+
+**STEP 1 — Fix Bug A (mitigation race / late entry)** — HIGHEST PRIORITY
+- File: `detectors/ifvg.py` + `models/confluence.py` (_collect_leg_fvgs)
+- Include FVGs with `mitigated_ts == current_candle.ts` in leg_fvgs so the inversion candle is not missed
+- Verify: after fix, entry_price should equal the exact close of the inversion candle, not a later candle
+
+**STEP 2 — Fix Bug B (mitigation ≠ inversion)**
+- File: `detectors/ifvg.py` check() method (~line 116)
+- Add `inverted: bool = False` to FVG dataclass
+- In IFVGDetector: only mark FVG as "cleared" for the all-must-invert rule if `fvg.inverted` is True
+- Set `fvg.inverted = True` when `candle.close > fvg.top` (bearish FVG) or `candle.close < fvg.bottom` (bullish FVG)
+
+**STEP 3 — Fix Bug C (remove body dominance from sweep candle)**
+- File: `detectors/sweep.py` `_check()` method
+- Remove the body ≥ 50% check. Sweep candles are supposed to have wicks (rejection), not body dominance
+- Body dominance already correctly applied only to IFVG inversion candle in confluence.py
+
+**STEP 4 — Fix Bug D (sweep wick check same candle)**
+- File: `models/confluence.py` `_sweep_has_valid_penetration()`
+- Require `sweep_candle` itself to have wick penetration ≥ min_wick (not just leg_extreme)
+- Keep `leg_extreme_candle` only for SL placement
+
+**STEP 5 — Change TP to fixed 1:1 (1R)**
+- File: `models/confluence.py` `_calculate_targets()` and `_find_dol_targets()`
+- TP1 = entry + risk (for longs), entry - risk (for shorts)
+- Keep DOL level lookup but only as a label/reference — actual TP is always 1R
+- Remove the RR-aware DOL target skipping (keep it simple: 1R TP always)
+- User confirmed: "make the RR at max 1:1 for now, just full TP at 1R"
+
+**STEP 6 — BE at intermediate liquidity level**
+- File: `journal/logger.py` check_outcomes() + `engine/backtest.py`
+- Pass the current liquidity levels list into check_outcomes() (or check at signal time)
+- After entry, if there is ANY opposing liquidity level between entry and TP1 → move SL to entry (BE) when price reaches that level
+- This is the "BE at first internal H/L" (Priority 6)
+
+**STEP 7 — IFVG inversion speed gate**
+- From PB Trading video (transcript: `transcripts/ict_liquidity_5xROT45rcdw.en.vtt`)
+- Track first_interaction_ts per FVG (first candle that touches the FVG zone)
+- If inversion fires > 4 candles after first interaction → reject signal (7+ definitely reject)
+- Timer is relative to the FVG's timeframe (4 × TF minutes max)
+
+**STEP 8 — HTF Alignment Gate (Priority 8) — finish + tune**
+- Code written in `models/confluence.py` `_get_htf_regime()` but NOT committed
+- Current approach: 72h (18 × 4H bars) momentum — too aggressive in ranging markets
+- Revised approach: only apply gate when momentum is DECISIVE (diff > 1% of price, ~120pts for NQ at 12000)
+- OR: revert to committed state and tackle after steps 1-7 are verified
+- NOTE: The current `_get_htf_regime` code should be reverted to `return None` until steps 1-7 are done
+
+### What's currently uncommitted (do NOT commit until steps 1-7 done):
+- `models/confluence.py`: HTF gate code (`_get_htf_regime`) — REVERT THIS to `return None` placeholder
+- All Priority 8 HTF gate iterations from this session are experimental and unstable
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit
