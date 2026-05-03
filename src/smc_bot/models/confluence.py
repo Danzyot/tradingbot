@@ -355,9 +355,11 @@ class ConfluenceEngine:
         if not self._has_displacement(setup.sweep, candles_by_tf, atr14_check):
             return None
 
-        # Step 9: HTF alignment gate — only enter if 4H trend doesn't decisively oppose setup
-        if not self._htf_regime_allows(setup.direction, candles_by_tf):
-            return None
+        # Step 9: HTF alignment gate — DISABLED (see CLAUDE.md)
+        # ICT setups are REVERSALS, not trend continuations. The original momentum-follow
+        # gate blocked SHORT entries when 4H was bullish — the OPPOSITE of ICT logic where
+        # you short when price is in PREMIUM (just had a big 4H bullish move).
+        # A correct HTF filter needs daily/weekly bias, not 4H momentum direction.
 
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         ifvg = self.ifvg_detector.check(candle, setup.sweep, leg_fvgs)
@@ -404,9 +406,7 @@ class ConfluenceEngine:
         CoWork fix: CISD = the candle whose body crosses the FVG boundary.
         After CISD fires, price must retrace to the FVG zone for entry.
         """
-        # Step 9: HTF alignment gate
-        if not self._htf_regime_allows(setup.direction, candles_by_tf):
-            return None
+        # Step 9: HTF gate — disabled (same reason as _try_model1, see comment above)
 
         # Step 1: CISD — body must cross a leg FVG boundary (same as IFVG trigger)
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
@@ -748,13 +748,12 @@ class ConfluenceEngine:
         return tp1_price, tp2_price, tp1_label
 
 
-    # HTF alignment gate — minimum 4H momentum (points) to block a counter-trend entry.
-    # Only applies when the 4H trend is DECISIVE enough to be meaningful.
-    # Too low: over-filters choppy/ranging days. Too high: never activates.
-    # 150pts ≈ 0.75% of ~20k NQ — a clear directional 4H move, not just noise.
-    # Measured over 3 × 4H bars (12 hours) to capture intraday regime, not multi-day.
-    _HTF_REGIME_THRESHOLD_PTS = 150.0
-    _HTF_REGIME_LOOKBACK_BARS = 3  # 3 × 4H = 12 hours
+    # HTF alignment gate constants — kept for reference, gate is currently disabled.
+    # Original implementation was momentum-following (block SHORT when 4H bullish),
+    # but ICT setups are REVERSALS: SHORT when price is at PREMIUM (4H just rallied).
+    # A future implementation should use daily/weekly bias, not 4H momentum direction.
+    _HTF_REGIME_THRESHOLD_PTS = 150.0   # unused while gate is disabled
+    _HTF_REGIME_LOOKBACK_BARS = 3       # unused while gate is disabled
 
     def _htf_regime_allows(
         self, direction: "TradeDirection", candles_by_tf: dict[int, list["Candle"]]

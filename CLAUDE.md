@@ -387,11 +387,16 @@ Then copy result to data/journal.db once done.
   → Filter: only S/A/B tier levels are valid DOL targets (F/C excluded)
 - Backtest validated on 2024-03-04 to 2024-03-15 (confirmed trade 4 filtered)
 
-**STEP 9 — HTF Alignment Gate — next to tackle**
-- Code written in `models/confluence.py` `_get_htf_regime()` — currently not called anywhere (placeholder)
-- Need to wire it into `_try_model1` / `_try_model2` with tuned threshold
-- Approach: only apply when momentum is DECISIVE (diff > 1% of price, ~120pts for NQ at 20k)
-- Run backtest validation FIRST (steps 1-8 are now done), then add this gate
+**STEP 9 — HTF Alignment Gate** ⚠️ IMPLEMENTED BUT DISABLED
+- Method `_htf_regime_allows()` exists in `models/confluence.py` but is NOT called.
+- Original implementation was a momentum-following gate (block SHORT when 4H bullish momentum > 150pts).
+- PROBLEM: This is backwards for ICT. ICT takes SHORTS when price is at PREMIUM (4H just rallied),
+  not longs. The gate blocked 60 entries in 5 days → collapsed Feb/Mar 2023 from 24 signals to 0.
+- CORRECT ICT HTF filter = DAILY BIAS, not 4H momentum direction.
+  e.g. "Daily candle is bearish → prefer shorts" (still not blocking longs outright).
+- Decision: disable until a proper premium/discount daily-bias implementation is ready.
+- Fix G (LTF FVG min size) also reverted: min_size=2.0 for 1m blocked 60% of manipulation-leg FVGs
+  on quieter days; the existing 2pt strong-close quality gate already handles micro-FVGs.
 
 ### DOL tier hierarchy (from cheat sheet — wire into target selection):
 1. **S-tier:** EQH/EQL (especially when aligned with PDH/PDL/PWH/PWL)
@@ -420,8 +425,11 @@ Then copy result to data/journal.db once done.
 - Fix: Added `LTF_FVG_MIN_SIZE = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0}` and wired into `FVGTracker` constructor
 - Now sub-2pt gaps on 1m, sub-3pt on 3m, etc. are ignored — real institutional imbalances only
 
+**Fix G reverted**: LTF FVG min size removed — it blocked 60% of manipulation-leg FVGs
+on quiet days. 2pt strong-close requirement already handles micro-FVG false entries.
+
 ### What's currently uncommitted:
-- Fixes E, F, G above — commit before starting Step 9
+- Fixes E + F, Step 9 revert of G + disable of HTF gate — commit now
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit

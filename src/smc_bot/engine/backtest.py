@@ -51,11 +51,14 @@ LTF_SWING_RIGHT = 5
 # LTF (1-5m) FVGs are NOT liquidity sweep targets — size filter only used for HTF.
 MIN_FVG_SIZE: dict[int, float] = {15: 5.0, 30: 8.0, 60: 10.0, 240: 15.0}
 
-# Minimum FVG size (points) for LTF FVGs used in IFVG detection.
-# Micro-FVGs (<2pt on 1m) are not real institutional imbalances — they're tick noise.
-# Scale slightly by TF: higher TFs require proportionally larger gaps.
-# Without this filter, sub-1pt gaps on 1m trigger false IFVG inversions.
-LTF_FVG_MIN_SIZE: dict[int, float] = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0}
+# NOTE: LTF FVGTrackers (1-5m) intentionally use min_size=0.0 (no filter at creation time).
+# The IFVG quality gates already guard against micro-FVG entries:
+#   - open-in-zone check (candle must start within the FVG zone)
+#   - 2pt strong close beyond far edge (_ifvg_close_is_strong)
+#   - body dominance >= 50% (_ifvg_close_is_body_dominant)
+# Adding a creation-time min_size to LTF trackers blocks valid manipulation-leg FVGs
+# on quieter days where FVG gaps are 0.5-1.5pt — those are real ICT imbalances.
+LTF_FVG_MIN_SIZE: dict[int, float] = {}  # empty = no filter for LTF
 
 # Cap on how many unmitigated FVGs per TF are used as sweep targets.
 # Keep only the most recent ones — older ones are less relevant to current price action.
