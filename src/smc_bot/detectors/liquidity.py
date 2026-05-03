@@ -24,7 +24,7 @@ from .sweep import LiquidityLevel, LiqTier
 
 def detect_eqhl(
     swing_points: list[SwingPoint],
-    tolerance_pts: float = 0.25,  # 1 tick — TV's Equal H/L indicator tracks 0.25pt apart as distinct levels
+    tolerance_pts: float = 1.0,  # 4 ticks — NQ equal highs/lows are rarely perfectly flat; 1pt catches real clustering
 ) -> list[LiquidityLevel]:
     """
     Group swing points within tolerance_pts of each other.
@@ -34,6 +34,8 @@ def detect_eqhl(
       Skip: same bar or only 1 touch
 
     Fixed-point tolerance (not percentage) — at NQ ~20k, 0.05% = 10pts which is too wide.
+    Old 0.25pt (1 tick) was too tight — misses 2-4 tick apart equal levels that are
+    visually and structurally equal in NQ price action.
     """
     levels: list[LiquidityLevel] = []
 
@@ -50,37 +52,59 @@ def _group_equal(
     tol_pts: float,
     kind: str,
 ) -> list[LiquidityLevel]:
-    used = set()
+    """
+    Group swing points within tol_pts of each other using transitive sequential clustering.
+
+    Sort by price first so that consecutive comparisons are always between adjacent
+    prices — this guarantees transitivity: if A≈B and B≈C then A,B,C all land in one
+    cluster rather than splitting at the first-vs-last distance.
+
+    Old approach compared each new point only against the GROUP'S FIRST point, which
+    caused [100.0, 100.6, 1.2] to group 100.0+100.6 correctly but miss 100.6+1.2 if
+    |100.0 - 1.2| > tol, even though they're adjacent within tolerance.
+    """
+    if not points:
+        return []
+
+    sorted_pts = sorted(points, key=lambda p: p.price)
+    groups: list[list[SwingPoint]] = []
+    current: list[SwingPoint] = [sorted_pts[0]]
+
+    for p in sorted_pts[1:]:
+        if abs(p.price - current[-1].price) <= tol_pts:
+            current.append(p)
+        else:
+            groups.append(current)
+            current = [p]
+    groups.append(current)
+
     levels = []
-    for i, p in enumerate(points):
-        if i in used:
+    for group in groups:
+        if len(group) < 2:
             continue
-        group = [p]
-        for j, q in enumerate(points[i + 1:], i + 1):
-            if j in used:
-                continue
-            if abs(p.price - q.price) <= tol_pts:
-                group.append(q)
-                used.add(j)
-        candle_gap = group[-1].candle_index - group[0].candle_index if len(group) >= 2 else 0
-        # Tier rules — match the ICT tier list exactly:
-        # S = 3+ touches (any gap), OR 2 touches with gap > 3 candles
-        # A = 2 touches with gap 1–3 candles
-        # Skip = same bar (gap 0) or only 1 touch
+        # Use min/max candle_index — after price-sort, chronological order is arbitrary
+        min_idx = min(p.candle_index for p in group)
+        max_idx = max(p.candle_index for p in group)
+        candle_gap = max_idx - min_idx
+        if candle_gap == 0:
+            continue   # same bar — skip
+
         if len(group) >= 3:
             tier = LiqTier.S
-        elif len(group) == 2 and candle_gap > 3:
+        elif candle_gap > 3:
             tier = LiqTier.S   # perfect EQH/EQL — well separated
-        elif len(group) == 2 and 1 <= candle_gap <= 3:
+        elif 1 <= candle_gap <= 3:
             tier = LiqTier.A   # close but still a double-tap
         else:
-            continue   # same bar or single touch — skip
-        avg_price = sum(x.price for x in group) / len(group)
+            continue
+
+        avg_price = sum(p.price for p in group) / len(group)
+        earliest = min(group, key=lambda p: p.candle_index)
         levels.append(LiquidityLevel(
             price=avg_price,
             tier=tier,
             kind=kind,
-            ts=group[0].ts,
+            ts=earliest.ts,
         ))
     return levels
 

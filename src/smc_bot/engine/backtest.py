@@ -51,6 +51,12 @@ LTF_SWING_RIGHT = 5
 # LTF (1-5m) FVGs are NOT liquidity sweep targets — size filter only used for HTF.
 MIN_FVG_SIZE: dict[int, float] = {15: 5.0, 30: 8.0, 60: 10.0, 240: 15.0}
 
+# Minimum FVG size (points) for LTF FVGs used in IFVG detection.
+# Micro-FVGs (<2pt on 1m) are not real institutional imbalances — they're tick noise.
+# Scale slightly by TF: higher TFs require proportionally larger gaps.
+# Without this filter, sub-1pt gaps on 1m trigger false IFVG inversions.
+LTF_FVG_MIN_SIZE: dict[int, float] = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0}
+
 # Cap on how many unmitigated FVGs per TF are used as sweep targets.
 # Keep only the most recent ones — older ones are less relevant to current price action.
 MAX_FVG_LEVELS_PER_TF = 3
@@ -113,7 +119,11 @@ def run_backtest(
     # LTF (< 15m): expire FVGs after 30 bars — keeps only recent leg FVGs for IFVG detection
     # HTF (15m+): no expiry — these are persistent liquidity levels, valid until mitigated
     fvg_trackers = {
-        tf: FVGTracker(timeframe=tf, inversion_window=30 if tf < 15 else 0)
+        tf: FVGTracker(
+            timeframe=tf,
+            inversion_window=30 if tf < 15 else 0,
+            min_size=LTF_FVG_MIN_SIZE.get(tf, 0.0),
+        )
         for tf in TFS
     }
     swing_ltf  = SwingDetector(left=LTF_SWING_LEFT,  right=LTF_SWING_RIGHT)   # 1m, manipulation leg + SMT

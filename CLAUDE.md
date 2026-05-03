@@ -401,8 +401,27 @@ Then copy result to data/journal.db once done.
 5. **B-tier:** Intermediate H/L inside/adjacent to FVG (careful: may be "protected" H/L)
 - **F-tier (ignore):** H/L that took out another H/L inside an FVG — trap/false signal
 
+### Additional fixes applied (2026-05-03) — post agent audit:
+
+**Fix E — EQH/EQL grouping non-transitivity** (`detectors/liquidity.py`, `_group_equal`)
+- Bug: old code compared each new point only against the GROUP'S FIRST point (not the nearest in-group point)
+  → Example: [100.0, 100.6, 1.1] with 0.7pt tolerance: 100.0+100.6 grouped, 1.1 skipped because |100.0-1.1|>0.7 even though |100.6-1.1|<=0.7
+- Fix: sort points by price first, then compare each new point to the LAST point in current group (sequential chain)
+- This guarantees transitive clustering — adjacent prices within tolerance always land in one group
+
+**Fix F — EQH/EQL tolerance too tight** (`detectors/liquidity.py`, `detect_eqhl`)
+- Old: 0.25pt (1 tick) — missed equal levels 2-4 ticks apart that are visually/structurally identical
+- Fix: widened to 1.0pt (4 ticks). NQ equal highs are rarely perfectly flat; 1pt captures real clustering without being so wide it groups different levels
+- Evidence: agent confirmed NQ 0.25pt tolerance required pixel-perfect equality, which never happens in practice
+
+**Fix G — Missing min_size filter on LTF FVGTrackers** (`engine/backtest.py`)
+- Bug: 1m/2m/3m/4m/5m FVGTrackers created with `min_size=0.0` — any tick-sized gap could trigger IFVG entry
+- Root cause: `LTF_FVG_MIN_SIZE` wasn't applied to the IFVG trackers; only HTF trackers had min_size for DOL levels
+- Fix: Added `LTF_FVG_MIN_SIZE = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0}` and wired into `FVGTracker` constructor
+- Now sub-2pt gaps on 1m, sub-3pt on 3m, etc. are ignored — real institutional imbalances only
+
 ### What's currently uncommitted:
-- Nothing blocking — steps 1-8 done. Step 9 (HTF gate) is safe to tackle next.
+- Fixes E, F, G above — commit before starting Step 9
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit
