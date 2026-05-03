@@ -355,8 +355,9 @@ class ConfluenceEngine:
         if not self._has_displacement(setup.sweep, candles_by_tf, atr14_check):
             return None
 
-        # Priority 8: HTF alignment gate — placeholder (not yet implemented)
-        # TODO: implement after Bugs A-D are fixed. See CLAUDE.md master plan.
+        # Step 9: HTF alignment gate — only enter if 4H trend doesn't decisively oppose setup
+        if not self._htf_regime_allows(setup.direction, candles_by_tf):
+            return None
 
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
         ifvg = self.ifvg_detector.check(candle, setup.sweep, leg_fvgs)
@@ -403,7 +404,9 @@ class ConfluenceEngine:
         CoWork fix: CISD = the candle whose body crosses the FVG boundary.
         After CISD fires, price must retrace to the FVG zone for entry.
         """
-        # Priority 8: HTF alignment gate — placeholder (not yet implemented)
+        # Step 9: HTF alignment gate
+        if not self._htf_regime_allows(setup.direction, candles_by_tf):
+            return None
 
         # Step 1: CISD — body must cross a leg FVG boundary (same as IFVG trigger)
         leg_fvgs = self._leg_fvgs.get(setup.id, {})
@@ -744,6 +747,45 @@ class ConfluenceEngine:
         tp2_price = tp2[0] if tp2 else None
         return tp1_price, tp2_price, tp1_label
 
+
+    # HTF alignment gate — minimum 4H momentum (points) to block a counter-trend entry.
+    # Only applies when the 4H trend is DECISIVE enough to be meaningful.
+    # Too low: over-filters choppy/ranging days. Too high: never activates.
+    # 150pts ≈ 0.75% of ~20k NQ — a clear directional 4H move, not just noise.
+    # Measured over 3 × 4H bars (12 hours) to capture intraday regime, not multi-day.
+    _HTF_REGIME_THRESHOLD_PTS = 150.0
+    _HTF_REGIME_LOOKBACK_BARS = 3  # 3 × 4H = 12 hours
+
+    def _htf_regime_allows(
+        self, direction: "TradeDirection", candles_by_tf: dict[int, list["Candle"]]
+    ) -> bool:
+        """
+        Returns True when the 4H regime is either aligned with `direction` or too
+        ambiguous to filter (< threshold momentum). Returns False only when the 4H
+        trend is decisively AGAINST the proposed trade direction.
+
+        Logic: compare last 4H close to the close N bars ago. If the move is large
+        (> _HTF_REGIME_THRESHOLD_PTS), it's a decisive trend — block the opposing
+        direction. If small, we're ranging — allow both directions.
+
+        Falls back to True (allow) when 4H data is insufficient.
+        """
+        candles_4h = candles_by_tf.get(240, [])
+        n = self._HTF_REGIME_LOOKBACK_BARS
+        if len(candles_4h) < n + 1:
+            return True   # not enough 4H history — don't filter
+
+        current_close = candles_4h[-1].close
+        prior_close = candles_4h[-1 - n].close
+        momentum = current_close - prior_close
+
+        if momentum > self._HTF_REGIME_THRESHOLD_PTS:
+            # Decisive 4H bullish move — block SHORT entries
+            return direction == TradeDirection.LONG
+        elif momentum < -self._HTF_REGIME_THRESHOLD_PTS:
+            # Decisive 4H bearish move — block LONG entries
+            return direction == TradeDirection.SHORT
+        return True  # ranging / ambiguous — allow both directions
 
     def _calc_rr(self, entry: float, sl: float, tp1: float) -> float:
         risk   = abs(entry - sl)
