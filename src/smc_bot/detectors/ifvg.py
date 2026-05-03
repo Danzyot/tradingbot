@@ -62,6 +62,12 @@ class IFVG:
 # All five LTF timeframes covered to find the highest available on the leg.
 TF_PRIORITY = [5, 4, 3, 2, 1]
 
+# Step 7 (master plan): IFVG inversion speed gate.
+# From PB Trading transcript: inversion must fire within 4 candles of first FVG interaction.
+# At 5+, the zone is "stale" — institutional flow has faded.  At 7+ it's definitely invalid.
+# Measured in bars of the FVG's OWN timeframe (4 × 5m = 20 min, 4 × 1m = 4 min).
+IFVG_MAX_CANDLES_AFTER_TOUCH = 4
+
 
 class IFVGDetector:
     """
@@ -106,15 +112,33 @@ class IFVGDetector:
             if not fvgs:
                 continue   # no FVGs of this TF on the leg — try lower TF
 
+            # Step 7: speed gate — drop FVGs that have been "stale" too long.
+            # An FVG is stale if price first touched the zone but hasn't inverted within
+            # IFVG_MAX_CANDLES_AFTER_TOUCH bars of the FVG's own TF.
+            # We check this via the tracker's bar_count vs the FVG's first_touch_bar.
+            tracker = self.trackers.get(tf)
+            if tracker is not None:
+                bar_now = tracker._bar_count
+                fvgs = [
+                    f for f in fvgs
+                    if (
+                        f.first_touch_bar is None or
+                        (bar_now - f.first_touch_bar) <= IFVG_MAX_CANDLES_AFTER_TOUCH
+                    )
+                ]
+            if not fvgs:
+                continue   # all FVGs on this TF are stale — try lower TF
+
             # This is the highest TF with FVGs. ALL must be inversed before entry.
             inversed_this_candle: list[FVG] = []
             all_clear = True
 
             for fvg in fvgs:
                 if self._is_inversed(candle, fvg, ifvg_direction):
+                    fvg.inverted = True
                     inversed_this_candle.append(fvg)
-                elif fvg.mitigated and fvg.mitigated_ts != candle.ts:
-                    pass   # pre-mitigated on a prior candle — counts as cleared
+                elif fvg.inverted:
+                    pass   # already inverted on a prior candle
                 else:
                     all_clear = False   # still active, not yet inversed
                     break
@@ -141,13 +165,9 @@ class IFVGDetector:
     @staticmethod
     def _is_inversed(candle: Candle, fvg: FVG, direction: IFVGDirection) -> bool:
         """
-        BULLISH inversion: candle CLOSE is above the bearish FVG's top.
-        BEARISH inversion: candle CLOSE is below the bullish FVG's bottom.
-
-        CoWork fix: use close, not body_high/body_low.
-        body_high = max(open, close) — a bearish candle that opens above fvg.top
-        fires body_high > fvg.top even though price closed BELOW and is going down.
-        Using close ensures the candle actually closed beyond the FVG on that bar.
+        Uses close (not body_high/body_low): a bearish candle that opens above
+        fvg.top would pass body_high > fvg.top even though it closed below and
+        was moving down. Close confirms the candle actually delivered beyond the edge.
         """
         if direction == IFVGDirection.BULLISH:
             return candle.close > fvg.top

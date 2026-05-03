@@ -159,14 +159,10 @@ def build_week_page(page_id: str, week_trades: list[dict]) -> None:
         if not pid:
             continue
         from datetime import datetime, timezone
-        ts = t["ts"][:16]
-        try:
-            dt = datetime.fromisoformat(t["ts"]).replace(tzinfo=timezone.utc)
-            from zoneinfo import ZoneInfo
-            dt_et = dt.astimezone(ZoneInfo("America/New_York"))
-            ts = dt_et.strftime("%Y-%m-%d %H:%M ET")
-        except Exception:
-            pass
+        dt = datetime.fromisoformat(t["ts"]).replace(tzinfo=timezone.utc)
+        from zoneinfo import ZoneInfo
+        dt_et = dt.astimezone(ZoneInfo("America/New_York"))
+        ts = dt_et.strftime("%Y-%m-%d %H:%M ET")
 
         outcome = t.get("outcome", "?")
         pnl_r = t.get("pnl_r", 0) or 0
@@ -216,13 +212,10 @@ def build_navigation(trades: list[dict]) -> None:
     # Get date range for each week
     def week_date_range(week_trades: list[dict]) -> str:
         from datetime import datetime, timezone
-        dts = []
-        for t in week_trades:
-            try:
-                dts.append(datetime.fromisoformat(t["ts"]).replace(tzinfo=timezone.utc)
-                           .astimezone(ET))
-            except Exception:
-                pass
+        dts = [
+            datetime.fromisoformat(t["ts"]).replace(tzinfo=timezone.utc).astimezone(ET)
+            for t in week_trades
+        ]
         if not dts:
             return ""
         return f"{min(dts).strftime('%b %#d')}-{max(dts).strftime('%#d, %Y')}"

@@ -11,8 +11,9 @@ Levels tracked (by DOL tier):
 The bot only acts on S/A/B tiers.
 """
 from __future__ import annotations
-from datetime import datetime, date, time, timezone
+from datetime import datetime, date, time, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ..data.candle import Candle
 from .swing import SwingPoint, SwingType
@@ -151,7 +152,6 @@ def detect_session_levels(
     Tracks multiple past sessions — price can sweep any prior unswept session H/L.
     Asia crosses midnight so we group by session date.
     """
-    from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
 
     def _in(t: time) -> bool:
@@ -167,7 +167,6 @@ def detect_session_levels(
     def _session_date(c: Candle) -> date:
         et = c.ts.astimezone(ET)
         if session_end == time(0, 0) and et.time() < session_start:
-            from datetime import timedelta
             return (et - timedelta(days=1)).date()
         return et.date()
 
@@ -212,6 +211,27 @@ def detect_pdhl(candles: list[Candle], today: date, lookback_days: int = 5) -> l
 
 # ── NWOG / NDOG ───────────────────────────────────────────────────────────────
 
+def _opening_gap_levels(
+    price_a: float,
+    price_b: float,
+    ts: datetime,
+    kind_prefix: str,
+    min_gap_pts: float,
+) -> list[LiquidityLevel]:
+    """
+    Shared helper for NDOG and NWOG: returns a high/low level pair when the
+    gap between two prices exceeds min_gap_pts, otherwise an empty list.
+    """
+    if abs(price_a - price_b) < min_gap_pts:
+        return []
+    top    = max(price_a, price_b)
+    bottom = min(price_a, price_b)
+    return [
+        LiquidityLevel(price=top,    tier=LiqTier.B, kind=f"{kind_prefix}_high", ts=ts),
+        LiquidityLevel(price=bottom, tier=LiqTier.B, kind=f"{kind_prefix}_low",  ts=ts),
+    ]
+
+
 def detect_ndog(
     prev_day_close: float,
     current_day_open: float,
@@ -219,16 +239,7 @@ def detect_ndog(
     min_gap_pts: float = 2.0,  # skip micro-gaps — CoWork: TFO shows single line when no real gap
 ) -> list[LiquidityLevel]:
     """New Day Opening Gap: gap between previous day close and today's open."""
-    if abs(prev_day_close - current_day_open) < min_gap_pts:
-        return []
-
-    top    = max(prev_day_close, current_day_open)
-    bottom = min(prev_day_close, current_day_open)
-
-    return [
-        LiquidityLevel(price=top,    tier=LiqTier.B, kind="ndog_high", ts=ts),
-        LiquidityLevel(price=bottom, tier=LiqTier.B, kind="ndog_low",  ts=ts),
-    ]
+    return _opening_gap_levels(prev_day_close, current_day_open, ts, "ndog", min_gap_pts)
 
 
 def detect_nwog(
@@ -238,16 +249,7 @@ def detect_nwog(
     min_gap_pts: float = 2.0,  # skip micro-gaps — same rule as NDOG
 ) -> list[LiquidityLevel]:
     """New Week Opening Gap: gap between Friday close and Sunday open."""
-    if abs(friday_close - sunday_open) < min_gap_pts:
-        return []
-
-    top    = max(friday_close, sunday_open)
-    bottom = min(friday_close, sunday_open)
-
-    return [
-        LiquidityLevel(price=top,    tier=LiqTier.B, kind="nwog_high", ts=ts),
-        LiquidityLevel(price=bottom, tier=LiqTier.B, kind="nwog_low",  ts=ts),
-    ]
+    return _opening_gap_levels(friday_close, sunday_open, ts, "nwog", min_gap_pts)
 
 
 # ── FVG as Liquidity Level ─────────────────────────────────────────────────────

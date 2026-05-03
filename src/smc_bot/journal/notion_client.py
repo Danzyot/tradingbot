@@ -1,4 +1,4 @@
-"""
+﻿"""
 Notion trade journal integration.
 
 Posts each closed trade as a page in a Notion database.
@@ -40,9 +40,12 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 import httpx
+
+from .database import JournalDB
 
 
 NOTION_API = "https://api.notion.com/v1"
@@ -68,7 +71,7 @@ class NotionJournal:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def post_trade(self, trade: dict) -> str:
+    def post_trade(self, trade: dict[str, object]) -> str:
         """
         Create a new page in the Notion database for this trade.
         `trade` is a sqlite3.Row or dict with all trade columns.
@@ -105,7 +108,7 @@ class NotionJournal:
         resp.raise_for_status()
         return resp.json()["id"]
 
-    def update_trade_outcome(self, page_id: str, trade: dict) -> None:
+    def update_trade_outcome(self, page_id: str, trade: dict[str, object]) -> None:
         """Update outcome fields on an existing Notion page."""
         props = self._outcome_properties(trade)
         httpx.patch(
@@ -115,7 +118,7 @@ class NotionJournal:
             timeout=15,
         ).raise_for_status()
 
-    def patch_database_properties(self, properties: dict) -> None:
+    def patch_database_properties(self, properties: dict[str, object]) -> None:
         """Add new properties to an existing Notion database (non-destructive)."""
         httpx.patch(
             f"{NOTION_API}/databases/{self.database_id}",
@@ -152,17 +155,14 @@ class NotionJournal:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _build_properties(self, t: dict) -> dict:
+    def _build_properties(self, t: dict[str, object]) -> dict[str, object]:
         """Build all Notion page properties from a trade dict."""
         direction = (t["direction"] or "").capitalize()
         symbol = (t["symbol"] or "NQ").upper()
         name = f"{t['ts'][:16]} {symbol} {direction}"
 
         # Date grouping fields derived from timestamp
-        try:
-            ts_dt = datetime.fromisoformat(t["ts"][:19])
-        except Exception:
-            ts_dt = datetime.utcnow()
+        ts_dt = datetime.fromisoformat(t["ts"][:19])
         year_str  = str(ts_dt.year)
         month_str = ts_dt.strftime("%Y-%m %b")        # e.g. "2026-01 Jan"
         week_str  = f"{ts_dt.year}-W{ts_dt.isocalendar()[1]:02d}"  # e.g. "2026-W14"
@@ -205,7 +205,7 @@ class NotionJournal:
 
         return props
 
-    def _outcome_properties(self, t: dict) -> dict:
+    def _outcome_properties(self, t: dict[str, object]) -> dict[str, object]:
         props = {
             "Outcome": _select(_outcome_label(t.get("outcome"))),
             "BE Moved": _checkbox(bool(t.get("be_moved"))),
@@ -262,12 +262,11 @@ class NotionJournal:
 
 # ── Sync function ─────────────────────────────────────────────────────────────
 
-def sync_to_notion(db_path, notion: NotionJournal) -> int:
+def sync_to_notion(db_path: Path, notion: NotionJournal) -> int:
     """
     Push all unsynced closed trades from SQLite to Notion.
     Returns number of trades synced.
     """
-    from .database import JournalDB
     jdb = JournalDB(db_path)
     unsynced = jdb.unsynced_trades()
     count = 0
@@ -294,7 +293,7 @@ def _date(ts_str: str) -> dict:
 def _select(name: str) -> dict:
     return {"select": {"name": str(name)}} if name else {"select": None}
 
-def _number(val) -> dict:
+def _number(val: float | int | None) -> dict:
     return {"number": float(val) if val is not None else None}
 
 def _checkbox(val: bool) -> dict:

@@ -1,15 +1,4 @@
-"""
-Historical data loader.
-
-Reads CSV files with columns: ts, open, high, low, close, volume, symbol
-Returns list[Candle] sorted by timestamp.
-
-CSV format (from save_data.py / TradingView MCP pulls):
-  ts          – ISO datetime string (UTC)
-  open/high/low/close – float
-  volume      – int
-  symbol      – str (MNQ / MES)
-"""
+"""Load 1m CSV candles (Databento format) into list[Candle]."""
 from __future__ import annotations
 
 import csv
@@ -21,17 +10,6 @@ from .candle import Candle
 
 
 def load_csv(path: str | Path, timeframe: int = 1, symbol: Optional[str] = None) -> list[Candle]:
-    """
-    Load candles from a CSV file.
-
-    Args:
-        path:      Path to CSV file.
-        timeframe: Candle timeframe in minutes (default 1).
-        symbol:    Override symbol (if not in CSV or you want to force it).
-
-    Returns:
-        List of Candle objects sorted by timestamp ascending.
-    """
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"CSV not found: {path}")

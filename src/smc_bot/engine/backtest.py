@@ -1,4 +1,4 @@
-"""
+﻿"""
 Historical backtest engine.
 
 Replays 1m candles through the full SMC pipeline:
@@ -13,10 +13,13 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ..data.aggregator import MultiTFAggregator
+from ..data.candle import Candle
 from ..data.history import load_csv
 from ..detectors.fvg import FVGTracker
 from ..detectors.swing import SwingDetector
@@ -84,18 +87,15 @@ def run_backtest(
         db_path = mnq_csv.parent / "journal.db"
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    from datetime import timezone
     mnq_candles = load_csv(mnq_csv, timeframe=1)
     mes_candles = load_csv(mes_csv, timeframe=1) if mes_csv and mes_csv.exists() else []
 
     # Apply date range filter
     if date_from:
-        from datetime import datetime
         dt_from = datetime.fromisoformat(date_from).replace(tzinfo=timezone.utc)
         mnq_candles = [c for c in mnq_candles if c.ts >= dt_from]
         mes_candles = [c for c in mes_candles if c.ts >= dt_from]
     if date_to:
-        from datetime import datetime
         dt_to = datetime.fromisoformat(date_to).replace(tzinfo=timezone.utc)
         mnq_candles = [c for c in mnq_candles if c.ts <= dt_to]
         mes_candles = [c for c in mes_candles if c.ts <= dt_to]
@@ -137,7 +137,7 @@ def run_backtest(
         journal.db.clear()
 
     # ── Candle buffers per TF for swing detection ─────────────────────────────
-    tf_buffers: dict[int, list] = {tf: [] for tf in TFS}
+    tf_buffers: dict[int, list[Candle]] = {tf: [] for tf in TFS}
 
     # ── Main replay loop ──────────────────────────────────────────────────────
     total_signals = 0
@@ -175,7 +175,6 @@ def run_backtest(
             levels.extend(detect_pdhl(ltf_candles, candle.ts.date()))
 
             # NDOG — gap between previous day close and current day open
-            from zoneinfo import ZoneInfo
             ET = ZoneInfo("America/New_York")
             today_et = candle.ts.astimezone(ET).date()
             today_candles = [c for c in ltf_candles if c.ts.astimezone(ET).date() == today_et]
@@ -236,10 +235,10 @@ def run_backtest(
         for signal in signals:
             if len(journal._open) >= max_concurrent_trades:
                 break   # already at capacity; discard remaining signals this candle
-            trade_id = journal.record_signal(signal)
+            # Pass current liquidity levels for Step 6 early BE trigger
+            trade_id = journal.record_signal(signal, liquidity_levels=levels)
             total_signals += 1
             if verbose:
-                from zoneinfo import ZoneInfo
                 sweep_level = signal.setup.sweep.level
                 et_ts = signal.ts.astimezone(ZoneInfo("America/New_York"))
                 print(

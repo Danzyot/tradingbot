@@ -21,10 +21,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from ..data.candle import Candle
 from .fvg import FVG, FVGType
+from .ifvg import TF_PRIORITY
+
+if TYPE_CHECKING:
+    from ..models.base import TradeDirection
 
 
 class CISDDirection(Enum):
@@ -42,12 +46,8 @@ class CISDSignal:
 
 
 class CISDDetector:
-    """
-    Detects CISD by checking if the current candle body crosses an unmitigated
-    FVG boundary from the sweep leg.
-
-    This replaces the old "opposing candle open" logic which was incorrect.
-    """
+    """Detects CISD by checking if the current candle body crosses an unmitigated
+    FVG boundary from the sweep leg."""
 
     def detect(
         self,

@@ -53,6 +53,12 @@ class FVG:
 
     mitigated: bool = False
     mitigated_ts: Optional[datetime] = None
+    inverted: bool = False
+
+    # Speed gate (Step 7 — master plan): track the first bar the FVG zone was touched.
+    # If inversion fires > IFVG_MAX_CANDLES_AFTER_TOUCH bars later → reject signal.
+    # bar_index is set at creation; first_touch_bar is set on the first interaction.
+    first_touch_bar: Optional[int] = None
 
     @property
     def ce(self) -> float:
@@ -121,6 +127,14 @@ class FVGTracker:
         if self.inversion_window > 0:
             self._expire_old()
 
+        # Track first touch: record bar_count when price first enters the FVG zone.
+        # "Interaction" = any candle whose range overlaps the zone (wick enters the zone).
+        if current is not None:
+            for fvg in self.active:
+                if fvg.first_touch_bar is None:
+                    if current.low <= fvg.top and current.high >= fvg.bottom:
+                        fvg.first_touch_bar = self._bar_count
+
         return new_fvgs
 
     def _detect_at(self, candles: list[Candle], idx: int,
@@ -129,8 +143,7 @@ class FVGTracker:
         c1 = candles[idx - 1]   # middle / displacement candle
         c2 = candles[idx]       # newest of the 3
 
-        # Bullish FVG: gap between c0 top and c2 bottom
-        # REQUIRED: displacement candle (c1) closed ABOVE the gap (c0.high)
+        # Bullish FVG: c0.high < c2.low gap, confirmed by c1 closing above c0.high
         if c0.high < c2.low and c1.close > c0.high:
             gap_size = c2.low - c0.high
             if gap_size >= self.min_size:
@@ -145,8 +158,7 @@ class FVGTracker:
                     leg_sweep_ts=leg_sweep_ts,
                 )
 
-        # Bearish FVG: gap between c0 bottom and c2 top
-        # REQUIRED: displacement candle (c1) closed BELOW the gap (c0.low)
+        # Bearish FVG: c0.low > c2.high gap, confirmed by c1 closing below c0.low
         if c0.low > c2.high and c1.close < c0.low:
             gap_size = c0.low - c2.high
             if gap_size >= self.min_size:

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Journal logger — converts Signal/Setup objects to DB rows and manages trade lifecycle.
 """
 from __future__ import annotations
@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..models.base import Signal, Setup, TradeDirection
+from ..detectors.sweep import LiquidityLevel
 from .database import JournalDB, DEFAULT_DB
 
 
@@ -35,16 +36,51 @@ class TradeJournal:
         self.starting_balance = starting_balance
         self.risk_pct = risk_pct
         # _open: trade_id → trade_dict (mutable — SL updates for BE)
-        self._open: dict[str, dict] = {}
+        self._open: dict[str, dict[str, object]] = {}
         # balance history: list of (trade_id, balance_after)
         self.balance_history: list[tuple[str, float]] = []
 
     # ── Signal recording ──────────────────────────────────────────────────────
 
-    def record_signal(self, signal: Signal) -> str:
-        """Log a signal as a new trade. Returns the trade ID."""
+    def record_signal(
+        self,
+        signal: Signal,
+        liquidity_levels: Optional[list[LiquidityLevel]] = None,
+    ) -> str:
+        """Log a signal as a new trade. Returns the trade ID.
+
+        Args:
+            signal:           The confirmed entry signal.
+            liquidity_levels: Current liquidity level list (used to find first internal
+                              level between entry and TP1 for early BE trigger).
+        """
         trade_id = str(uuid.uuid4())[:8]
         risk_dollars = round(self.balance * self.risk_pct, 2)
+
+        # Step 6 (master plan): if there is any opposing liquidity level BETWEEN
+        # entry and TP1, that level becomes the early BE trigger.
+        # When price reaches it, SL slides to entry — before the standard be_trigger_r target.
+        be_level_price: Optional[float] = None
+        if liquidity_levels and signal.tp1 is not None:
+            entry = signal.entry_price
+            tp1 = signal.tp1
+            if signal.direction == TradeDirection.LONG:
+                # Look for any level strictly between entry and tp1 (above entry, below tp1)
+                intermediate = [
+                    lvl.price for lvl in liquidity_levels
+                    if entry < lvl.price < tp1
+                ]
+                if intermediate:
+                    be_level_price = min(intermediate)   # nearest level above entry
+            else:
+                # Look for any level strictly between tp1 and entry (below entry, above tp1)
+                intermediate = [
+                    lvl.price for lvl in liquidity_levels
+                    if tp1 < lvl.price < entry
+                ]
+                if intermediate:
+                    be_level_price = max(intermediate)   # nearest level below entry
+
         row = {
             "id": trade_id,
             "ts": signal.ts.isoformat(),
@@ -82,6 +118,8 @@ class TradeJournal:
             # Internal tracking
             "_original_sl": signal.stop_loss,
             "_be_moved": False,
+            # Step 6: first intermediate liquidity level between entry and TP1 → early BE trigger
+            "_be_level_price": be_level_price,
         }
         self.db.insert_trade(row)
         self.db.mark_setup_fired(signal.setup.id)
@@ -133,8 +171,24 @@ class TradeJournal:
             if risk == 0:
                 continue
 
-            # BE logic: if price has moved be_trigger_r * risk in our favor,
-            # slide SL to entry (only once)
+            # Step 6 (master plan): early BE at first intermediate liquidity level.
+            # If _be_level_price is set, move SL to entry when price reaches that level —
+            # BEFORE the standard be_trigger_r distance is hit.
+            be_level = trade.get("_be_level_price")
+            if be_level is not None and not be_moved:
+                hit_be_level = (
+                    (direction == "long"  and candle_close >= be_level) or
+                    (direction == "short" and candle_close <= be_level)
+                )
+                if hit_be_level:
+                    trade["stop_loss"] = entry
+                    trade["_be_moved"] = True
+                    trade["_be_level_price"] = None   # consumed — don't re-trigger
+                    sl = entry
+                    be_moved = True
+
+            # Standard BE logic: if price has moved be_trigger_r * risk in favor,
+            # slide SL to entry (only if early BE level didn't already fire).
             if be_trigger_r > 0 and not be_moved:
                 be_price = (
                     entry + be_trigger_r * risk if direction == "long"

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Confluence engine — orchestrates all detectors and emits Signals.
 
 Flow per 1m candle close:
@@ -138,7 +138,6 @@ class ConfluenceEngine:
             # We store the leg extreme separately as leg_extreme_candle — used ONLY for SL.
             # sweep_candle stays as the original close-back candle for quality gate checks.
             # Apply the same 90-min cap as FVGs — don't reach back more than 90 min.
-            from datetime import timedelta
             _leg_cap_ts = sweep.ts - timedelta(minutes=self._MAX_LEG_LOOKBACK_MIN)
             _effective_start = max(sweep.leg_start_ts, _leg_cap_ts) if sweep.leg_start_ts else _leg_cap_ts
             leg_candles = [c for c in ltf_candles_1m
@@ -250,7 +249,6 @@ class ConfluenceEngine:
         The 90-min cap prevents stale FVGs from an earlier approach to the same
         level from polluting the leg. Only the MOST RECENT manipulation counts.
         """
-        from datetime import timedelta
         hard_min_ts = sweep.ts - timedelta(minutes=self._MAX_LEG_LOOKBACK_MIN)
         if sweep.leg_start_ts:
             effective_start = max(sweep.leg_start_ts, hard_min_ts)
@@ -259,10 +257,10 @@ class ConfluenceEngine:
 
         result: dict[int, list[FVG]] = {}
         for tf, tracker in self.fvg_trackers.items():
+            all_fvgs = tracker.active + tracker.mitigated
             leg = [
-                fvg for fvg in tracker.active
+                fvg for fvg in all_fvgs
                 if fvg.ts <= sweep.ts
-                and not fvg.mitigated
                 and fvg.ts >= effective_start
             ]
             result[tf] = leg
@@ -375,10 +373,8 @@ class ConfluenceEngine:
         if not self._ifvg_close_is_strong(ifvg, candle):
             return None
 
-        # Require a real DOL target — no mechanical R-multiple fallback
+        # TP1 is always fixed 1R (Step 5 — master plan)
         sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
-        if tp1 is None:
-            return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(candle.close, sl, tp1)
         if rr < self.min_rr:
             return None
@@ -391,35 +387,11 @@ class ConfluenceEngine:
         if tp1_label:
             desc = f"{desc} | DOL: {tp1_label}"
 
-        return Signal(
-            setup=setup,
-            model=ModelType.IFVG,
-            direction=setup.direction,
-            symbol=self._pick_symbol(setup),
-            entry_price=candle.close,
-            stop_loss=sl,
-            tp1=tp1,
-            tp2=tp2,
-            rr_ratio=rr,
-            session=active_session(now) or "",
-            ts=now,
-            entry_tf=entry_tf,
-            confluence_desc=desc,
-            fvg_top=ifvg.source_fvg.top,
-            fvg_bottom=ifvg.source_fvg.bottom,
-            fvg_ts=ifvg.source_fvg.ts,
-            fvg_kind=ifvg.source_fvg.kind.value if hasattr(ifvg.source_fvg.kind, 'value') else str(ifvg.source_fvg.kind),
-            sweep_wick=(
-                (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).low
-                if setup.direction == TradeDirection.LONG
-                else (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).high
-            ),
-            smt_ts_a=setup.smt.ts_a if setup.smt else None,
-            smt_price_a=(setup.smt.low_a or setup.smt.high_a) if setup.smt else None,
-            smt_ts_b=setup.smt.ts_b if setup.smt else None,
-            smt_price_b=(setup.smt.low_b or setup.smt.high_b) if setup.smt else None,
-            smt_bonus=setup.smt_confirmed,
-            cisd_bonus=setup.cisd_confirmed,
+        return self._make_signal(
+            setup=setup, model=ModelType.IFVG,
+            entry_price=candle.close, stop_loss=sl, tp1=tp1, tp2=tp2, rr=rr,
+            now=now, entry_tf=entry_tf, confluence_desc=desc,
+            fvg=ifvg.source_fvg,
         )
 
     def _try_model2(
@@ -450,11 +422,9 @@ class ConfluenceEngine:
         if not (post_cisd_fvg.bottom <= candle.close <= post_cisd_fvg.top):
             return None
 
-        # Entry at CE of FVG
+        # Entry at CE of FVG — TP1 is always fixed 1R (Step 5)
         entry = post_cisd_fvg.ce
         sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
-        if tp1 is None:
-            return None   # no identifiable draw-on-liquidity → skip
         rr = self._calc_rr(entry, sl, tp1)
         if rr < self.min_rr:
             return None
@@ -464,36 +434,77 @@ class ConfluenceEngine:
             smt=setup.smt_confirmed, cisd=True,
         )
 
+        return self._make_signal(
+            setup=setup, model=ModelType.ICT2022,
+            entry_price=entry, stop_loss=sl, tp1=tp1, tp2=tp2, rr=rr,
+            now=now, entry_tf=fvg_tf, confluence_desc=desc,
+            fvg=post_cisd_fvg, cisd_bonus=True,
+        )
 
+    # ── Signal construction helpers ───────────────────────────────────────────
+
+    def _sweep_wick_price(self, setup: Setup) -> float:
+        """Return the wick extreme of the manipulation leg for chart drawing.
+
+        Uses leg_extreme_candle when available (the actual wick extreme of the
+        full leg), otherwise falls back to sweep_candle (the close-back candle).
+        """
+        candle = setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle
+        return candle.low if setup.direction == TradeDirection.LONG else candle.high
+
+    @staticmethod
+    def _fvg_kind_str(fvg: FVG) -> str:
+        """Return the FVG kind as a plain string ('bullish' or 'bearish')."""
+        return fvg.kind.value if hasattr(fvg.kind, "value") else str(fvg.kind)
+
+    def _make_signal(
+        self,
+        setup: Setup,
+        model: ModelType,
+        entry_price: float,
+        stop_loss: float,
+        tp1: float,
+        tp2: Optional[float],
+        rr: float,
+        now: datetime,
+        entry_tf: int,
+        confluence_desc: str,
+        fvg: Optional[FVG] = None,
+        cisd_bonus: Optional[bool] = None,
+    ) -> Signal:
+        """
+        Construct a Signal with all common fields pre-filled.
+
+        Callers pass only the fields that differ between models; sweep_wick and
+        SMT drawing coordinates are derived from setup in a single place.
+        cisd_bonus defaults to setup.cisd_confirmed when not provided.
+        """
+        smt = setup.smt
         return Signal(
             setup=setup,
-            model=ModelType.ICT2022,
+            model=model,
             direction=setup.direction,
             symbol=self._pick_symbol(setup),
-            entry_price=entry,
-            stop_loss=sl,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
             tp1=tp1,
             tp2=tp2,
             rr_ratio=rr,
             session=active_session(now) or "",
             ts=now,
-            entry_tf=fvg_tf,
-            confluence_desc=desc,
-            fvg_top=post_cisd_fvg.top,
-            fvg_bottom=post_cisd_fvg.bottom,
-            fvg_ts=post_cisd_fvg.ts,
-            fvg_kind=post_cisd_fvg.kind.value if hasattr(post_cisd_fvg.kind, 'value') else str(post_cisd_fvg.kind),
-            sweep_wick=(
-                (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).low
-                if setup.direction == TradeDirection.LONG
-                else (setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle).high
-            ),
-            smt_ts_a=setup.smt.ts_a if setup.smt else None,
-            smt_price_a=(setup.smt.low_a or setup.smt.high_a) if setup.smt else None,
-            smt_ts_b=setup.smt.ts_b if setup.smt else None,
-            smt_price_b=(setup.smt.low_b or setup.smt.high_b) if setup.smt else None,
+            entry_tf=entry_tf,
+            confluence_desc=confluence_desc,
+            fvg_top=fvg.top if fvg else None,
+            fvg_bottom=fvg.bottom if fvg else None,
+            fvg_ts=fvg.ts if fvg else None,
+            fvg_kind=self._fvg_kind_str(fvg) if fvg else None,
+            sweep_wick=self._sweep_wick_price(setup),
+            smt_ts_a=smt.ts_a if smt else None,
+            smt_price_a=(smt.low_a or smt.high_a) if smt else None,
+            smt_ts_b=smt.ts_b if smt else None,
+            smt_price_b=(smt.low_b or smt.high_b) if smt else None,
             smt_bonus=setup.smt_confirmed,
-            cisd_bonus=True,
+            cisd_bonus=cisd_bonus if cisd_bonus is not None else setup.cisd_confirmed,
         )
 
     def _try_sweep_entry(
@@ -506,8 +517,6 @@ class ConfluenceEngine:
         before layering confluence filters on top.
         """
         sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)
-        if tp1 is None:
-            return None   # still require a real DOL target
         rr = self._calc_rr(candle.close, sl, tp1)
         if rr < self.min_rr:
             return None
@@ -517,25 +526,10 @@ class ConfluenceEngine:
         kind = self._KIND_LABELS.get(sweep.level.kind, sweep.level.kind.replace("_", " ").title())
         desc = f"{direction_label} sweep of {kind} ({sweep.level.tier.value}-tier) | sweep-entry"
 
-        return Signal(
-            setup=setup,
-            model=ModelType.SWEEP,
-            direction=setup.direction,
-            symbol=self._pick_symbol(setup),
-            entry_price=candle.close,
-            stop_loss=sl,
-            tp1=tp1,
-            tp2=tp2,
-            rr_ratio=rr,
-            session=active_session(now) or "",
-            ts=now,
-            entry_tf=1,
-            confluence_desc=desc,
-            sweep_wick=(
-                (sweep.leg_extreme_candle or sweep.sweep_candle).low
-                if setup.direction == TradeDirection.LONG
-                else (sweep.leg_extreme_candle or sweep.sweep_candle).high
-            ),
+        return self._make_signal(
+            setup=setup, model=ModelType.SWEEP,
+            entry_price=candle.close, stop_loss=sl, tp1=tp1, tp2=tp2, rr=rr,
+            now=now, entry_tf=1, confluence_desc=desc,
         )
 
     # ── Sweep quality gates ───────────────────────────────────────────────────
@@ -568,19 +562,18 @@ class ConfluenceEngine:
 
     def _sweep_has_valid_penetration(self, sweep: "Sweep", atr14: float = 15.0) -> bool:
         """
-        Three checks on the sweep:
+        Three checks on the sweep candle itself:
         1. Wick extends >= max(3.0, atr14 * 0.15) pts beyond the level
-           → measured from the leg_extreme_candle (actual lowest/highest point of the leg)
+           → measured on sweep_candle (the close-back candle)
         2. Wick through level is >= 20% of total candle range (pin bar shape)
-           → measured on the close-back candle (sweep_candle) which has a clear wick shape
+           → measured on sweep_candle
         3. Body closes >= max(1.0, atr14 * 0.05) pts back inside the level
-           → measured on the close-back candle (body is always inside by design)
+           → measured on sweep_candle (body is always inside by design)
 
-        Separating wick extent (leg extreme) from body return (close-back candle) ensures
-        that a multi-candle leg with a deep wick followed by a clean close-back still passes.
+        All three checks use the same sweep_candle so that the actual close-back
+        candle must itself demonstrate meaningful wick penetration.
         """
         c = sweep.sweep_candle            # close-back candle — body is inside the level
-        ext = sweep.leg_extreme_candle or sweep.sweep_candle   # actual leg extreme
 
         total_range = c.high - c.low
         if total_range == 0:
@@ -596,7 +589,7 @@ class ConfluenceEngine:
         min_close = max(self._BASE_MIN_CLOSE_RETURN, atr14 * self._ATR_MULT_CLOSE)
 
         if sweep.direction.value == "bullish":
-            wick_through = sweep.level.price - ext.low   # leg extreme → deepest wick
+            wick_through = sweep.level.price - c.low   # sweep_candle wick depth
             close_return = c.body_low - sweep.level.price  # close-back candle body
             return (
                 wick_through >= min_wick
@@ -604,7 +597,7 @@ class ConfluenceEngine:
                 and close_return >= min_close
             )
         else:
-            wick_through = ext.high - sweep.level.price  # leg extreme → highest wick
+            wick_through = c.high - sweep.level.price  # sweep_candle wick height
             close_return = sweep.level.price - c.body_high  # close-back candle body
             return (
                 wick_through >= min_wick
@@ -684,12 +677,12 @@ class ConfluenceEngine:
     ) -> tuple[float, Optional[float], Optional[float], Optional[str]]:
         """
         SL: beyond the sweep candle wick + buffer.
-        TP1: nearest opposing major liquidity (DOL target). Returns None if no valid target.
-        TP2: second nearest major liquidity, or None.
-        tp1_label: kind + tier of the TP1 level (for logging).
+        TP1: fixed 1R (entry ± risk distance).  Simple, consistent.
+        TP2: nearest opposing major liquidity (DOL target) — runner label/reference only.
+        tp1_label: DOL level nearest to the fixed 1R TP (informational).
 
-        NO mechanical R-multiple fallback — the trade MUST have a real draw-on-liquidity
-        target. If the chart isn't drawn to an identifiable level, we don't trade.
+        STEP 5 (master plan): TP is always 1:1. DOL lookup is kept for labelling only.
+        No RR-aware DOL skipping — the 1R TP always fires.
         """
         entry = candle.close
 
@@ -698,21 +691,26 @@ class ConfluenceEngine:
         sl_candle = setup.sweep.leg_extreme_candle or setup.sweep.sweep_candle
         if setup.direction == TradeDirection.LONG:
             sl = sl_candle.low - self._SL_BUFFER
-            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=True, sl=sl, min_rr=self.min_rr)
+            risk = abs(entry - sl)
+            tp1 = entry + risk          # fixed 1R
+            dol, _, tp1_label = self._find_dol_targets(entry, above=True)
+            tp2 = dol   # DOL as runner reference — may be None
         else:
             sl = sl_candle.high + self._SL_BUFFER
-            tp1, tp2, tp1_label = self._find_dol_targets(entry, above=False, sl=sl, min_rr=self.min_rr)
+            risk = abs(entry - sl)
+            tp1 = entry - risk          # fixed 1R
+            dol, _, tp1_label = self._find_dol_targets(entry, above=False)
+            tp2 = dol   # DOL as runner reference — may be None
 
         return sl, tp1, tp2, tp1_label
 
     def _find_dol_targets(
         self, entry: float, above: bool, sl: float = 0.0, min_rr: float = 0.0
     ) -> tuple[Optional[float], Optional[float], Optional[str]]:
-        """Return DOL targets on the target side.
+        """Return DOL targets on the target side (informational — TP1 is always 1R).
 
-        When sl and min_rr are provided, skips targets that don't meet the RR
-        requirement — picks the NEAREST level that gives >= min_rr return.
-        The first qualifying level is TP1; the next qualifying level beyond that is TP2.
+        Returns the nearest opposing liquidity level >= _MIN_TP_POINTS away.
+        sl and min_rr are no longer used for filtering (Step 5), kept for signature compat.
         """
         candidates = []
         for level in self._liquidity_levels:
@@ -729,62 +727,14 @@ class ConfluenceEngine:
         else:
             candidates.sort(key=lambda x: x[0], reverse=True)
 
-        # If RR filtering requested, skip levels that don't meet minimum RR
-        if min_rr > 0.0 and sl != 0.0:
-            risk = abs(entry - sl)
-            qualifying = [c for c in candidates if risk > 0 and abs(c[0] - entry) / risk >= min_rr]
-            if not qualifying:
-                return None, None, None
-            tp1 = qualifying[0]
-            tp2 = qualifying[1] if len(qualifying) > 1 else None
-        else:
-            tp1 = candidates[0]
-            tp2 = candidates[1] if len(candidates) > 1 else None
+        tp1 = candidates[0]
+        tp2 = candidates[1] if len(candidates) > 1 else None
 
         tp1_price = tp1[0]
         tp1_label = f"{tp1[1]} ({tp1[2].value})"
         tp2_price = tp2[0] if tp2 else None
         return tp1_price, tp2_price, tp1_label
 
-    # Lookback for HTF regime: compare price N 4H bars ago vs the most recent closed 4H bar.
-    # 6 × 4H = 24 hours — a full trading day of context, stable across intraday sessions.
-    _HTF_REGIME_LOOKBACK_4H = 18  # 18 × 4H = 72 hours = ~3 trading days
-
-    def _get_htf_regime(
-        self, current_price: float, candles_by_tf: dict[int, list["Candle"]]
-    ) -> Optional[str]:
-        """
-        Priority 8: HTF alignment gate — 24-hour momentum using 4H candles.
-
-        Compares the most recently closed 4H candle's close to the close from
-        N × 4H bars ago (N = _HTF_REGIME_LOOKBACK_4H, default 6 = ~24 hours):
-            close_now > close_24h_ago → "bullish" → allow longs, block shorts
-            close_now < close_24h_ago → "bearish" → allow shorts, block longs
-            equal (rare)              → None (no filter)
-
-        This 24-hour momentum signal is stable across intraday sessions — a single
-        bearish 4H candle (pullback) does not flip the regime. It only changes when
-        the net 24-hour move reverses direction.
-        Returns None until enough 4H history is available (< N+2 bars).
-        """
-        candles_4h = candles_by_tf.get(240, [])
-        # Need: current (possibly incomplete) + most_recent_closed + N lookback bars
-        need = self._HTF_REGIME_LOOKBACK_4H + 2
-        if len(candles_4h) < need:
-            return None
-
-        # candles_4h[-1] = current (possibly incomplete) — skip
-        # candles_4h[-2] = most recently CLOSED 4H bar
-        # candles_4h[-(need)] = bar from N 4H periods ago
-        close_now = candles_4h[-2].close
-        close_ref = candles_4h[-need].close
-
-        if close_now > close_ref:
-            return "bullish"
-        elif close_now < close_ref:
-            return "bearish"
-        else:
-            return None
 
     def _calc_rr(self, entry: float, sl: float, tp1: float) -> float:
         risk   = abs(entry - sl)
@@ -832,7 +782,7 @@ class ConfluenceEngine:
         setup: Setup,
         model: ModelType,
         entry_tf: int,
-        ifvg: Optional[object] = None,   # IFVG object for FVG TF info
+        ifvg: Optional[IFVG] = None,
         smt: bool = False,
         cisd: bool = False,
     ) -> str:

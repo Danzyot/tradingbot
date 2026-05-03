@@ -1,4 +1,4 @@
-"""
+﻿"""
 Trade journal — SQLite backend.
 
 Schema:
@@ -129,7 +129,7 @@ class JournalDB:
         self.db_path = db_path
         init_db(db_path)
 
-    def insert_trade(self, trade: dict) -> None:
+    def insert_trade(self, trade: dict[str, object]) -> None:
         with get_conn(self.db_path) as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO trades
@@ -182,14 +182,14 @@ class JournalDB:
                 "UPDATE trades SET notion_page_id=? WHERE id=?", (page_id, trade_id)
             )
 
-    def unsynced_trades(self) -> list:
+    def unsynced_trades(self) -> list[sqlite3.Row]:
         """Return closed trades not yet synced to Notion."""
         with get_conn(self.db_path) as conn:
             return conn.execute(
                 "SELECT * FROM trades WHERE outcome IS NOT NULL AND notion_page_id IS NULL"
             ).fetchall()
 
-    def insert_setup(self, setup: dict) -> None:
+    def insert_setup(self, setup: dict[str, object]) -> None:
         with get_conn(self.db_path) as conn:
             conn.execute("""
                 INSERT OR IGNORE INTO setups
