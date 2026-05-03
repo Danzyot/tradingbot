@@ -704,16 +704,24 @@ class ConfluenceEngine:
 
         return sl, tp1, tp2, tp1_label
 
+    # DOL tier priority: S (EQH/EQL) → A (unmitigated FVGs) → B (session/PDH/PDL/gaps)
+    # Per cheat sheet: #1 EQH/EQL, #2 Unmitigated FVGs, #3 Session/PDH, #4 Data H/L, #5 Intermediate
+    _DOL_TIER_RANK = {LiqTier.S: 0, LiqTier.A: 1, LiqTier.B: 2}
+    _DOL_VALID_TIERS = {LiqTier.S, LiqTier.A, LiqTier.B}
+
     def _find_dol_targets(
         self, entry: float, above: bool, sl: float = 0.0, min_rr: float = 0.0
     ) -> tuple[Optional[float], Optional[float], Optional[str]]:
         """Return DOL targets on the target side (informational — TP1 is always 1R).
 
-        Returns the nearest opposing liquidity level >= _MIN_TP_POINTS away.
-        sl and min_rr are no longer used for filtering (Step 5), kept for signature compat.
+        Sorted by tier (S > A > B) first, then by proximity within the same tier.
+        Only S/A/B tier levels are valid DOL targets per the DOL cheat sheet.
+        sl and min_rr kept for signature compat (Step 5 — TP is always 1R).
         """
         candidates = []
         for level in self._liquidity_levels:
+            if level.tier not in self._DOL_VALID_TIERS:
+                continue
             if above and level.price > entry + self._MIN_TP_POINTS:
                 candidates.append((level.price, level.kind, level.tier))
             elif not above and level.price < entry - self._MIN_TP_POINTS:
@@ -722,10 +730,11 @@ class ConfluenceEngine:
         if not candidates:
             return None, None, None
 
-        if above:
-            candidates.sort(key=lambda x: x[0])
-        else:
-            candidates.sort(key=lambda x: x[0], reverse=True)
+        # Prefer highest tier (S over A over B). Within same tier, prefer nearest.
+        candidates.sort(key=lambda x: (
+            self._DOL_TIER_RANK.get(x[2], 9),
+            x[0] if above else -x[0],
+        ))
 
         tp1 = candidates[0]
         tp2 = candidates[1] if len(candidates) > 1 else None

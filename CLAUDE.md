@@ -378,14 +378,31 @@ Then copy result to data/journal.db once done.
 - `FVGTracker.update()` records first touch bar when `candle.low <= fvg.top and candle.high >= fvg.bottom`
 - `IFVGDetector.check()` filters out FVGs touched > `IFVG_MAX_CANDLES_AFTER_TOUCH = 4` bars ago
 
-**STEP 8 — HTF Alignment Gate (Priority 8) — next to tackle**
+**STEP 8 — IFVG full-body inversion + DOL tier sorting** ✅ DONE
+- `_is_inversed` now requires `candle.open <= fvg.top` (bullish) or `candle.open >= fvg.bottom` (bearish)
+  → Prevents continuation candles that opened PAST the far edge from triggering IFVG entry
+  → "Full inversion" = candle approaches from within/on-side of zone AND closes through far edge
+- `_find_dol_targets` now sorts by tier (S > A > B) first, then by proximity within same tier
+  → Per DOL cheat sheet: EQH/EQL (#1) beats FVG (#2) beats session H/L (#3) regardless of distance
+  → Filter: only S/A/B tier levels are valid DOL targets (F/C excluded)
+- Backtest validated on 2024-03-04 to 2024-03-15 (confirmed trade 4 filtered)
+
+**STEP 9 — HTF Alignment Gate — next to tackle**
 - Code written in `models/confluence.py` `_get_htf_regime()` — currently not called anywhere (placeholder)
 - Need to wire it into `_try_model1` / `_try_model2` with tuned threshold
 - Approach: only apply when momentum is DECISIVE (diff > 1% of price, ~120pts for NQ at 20k)
-- Run backtest validation FIRST (steps 1-7 are now done), then add this gate
+- Run backtest validation FIRST (steps 1-8 are now done), then add this gate
+
+### DOL tier hierarchy (from cheat sheet — wire into target selection):
+1. **S-tier:** EQH/EQL (especially when aligned with PDH/PDL/PWH/PWL)
+2. **A-tier:** Unmitigated FVGs (bullish FVG below for long target, bearish above for short)
+3. **B-tier:** Previous session H/L (PDH/PDL, Asia/London/NY session H/L), NWOG/NDOG
+4. **B-tier:** Data highs/lows (news candle extremes — if one side taken, target other side)
+5. **B-tier:** Intermediate H/L inside/adjacent to FVG (careful: may be "protected" H/L)
+- **F-tier (ignore):** H/L that took out another H/L inside an FVG — trap/false signal
 
 ### What's currently uncommitted:
-- Nothing blocking — all steps 1-7 done. Step 8 (HTF gate) is safe to tackle next.
+- Nothing blocking — steps 1-8 done. Step 9 (HTF gate) is safe to tackle next.
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit

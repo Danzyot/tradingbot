@@ -165,11 +165,18 @@ class IFVGDetector:
     @staticmethod
     def _is_inversed(candle: Candle, fvg: FVG, direction: IFVGDirection) -> bool:
         """
-        Uses close (not body_high/body_low): a bearish candle that opens above
-        fvg.top would pass body_high > fvg.top even though it closed below and
-        was moving down. Close confirms the candle actually delivered beyond the edge.
+        Full inversion: the candle must approach FROM WITHIN or on the near side of
+        the FVG zone and close decisively through the far edge.
+
+        Open check prevents triggering on continuation candles that already opened
+        past the far edge (inversion happened on a prior bar — this would be a
+        re-entry, not the inversion candle itself).
         """
         if direction == IFVGDirection.BULLISH:
-            return candle.close > fvg.top
+            # Bearish FVG inverted: candle opens at/below fvg.top (within or below zone)
+            # and closes above it (delivers through the far edge)
+            return candle.open <= fvg.top and candle.close > fvg.top
         else:
-            return candle.close < fvg.bottom
+            # Bullish FVG inverted: candle opens at/above fvg.bottom (within or above zone)
+            # and closes below it (delivers through the far edge)
+            return candle.open >= fvg.bottom and candle.close < fvg.bottom
