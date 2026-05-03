@@ -1,0 +1,29 @@
+contracts:
+  NQ:
+    symbol: "NQ"
+    exchange: "CME"
+    tick_size: 0.25
+    tick_value: 5.00
+    multiplier: 20.0
+    currency: "USD"
+  ES:
+    symbol: "ES"
+    exchange: "CME"
+    tick_size: 0.25
+    tick_value: 12.50
+    multiplier: 50.0
+    currency: "USD"
+  MNQ:
+    symbol: "MNQ"
+    exchange: "CME"
+    tick_size: 0.25
+    tick_value: 0.50
+    multiplier: 2.0
+    currency: "USD"
+  MES:
+    symbol: "MES"
+    exchange: "CME"
+    tick_size: 0.25
+    tick_value: 1.25
+    multiplier: 5.0
+    currency: "USD"
