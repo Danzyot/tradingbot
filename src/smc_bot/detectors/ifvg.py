@@ -62,11 +62,15 @@ class IFVG:
 # All five LTF timeframes covered to find the highest available on the leg.
 TF_PRIORITY = [5, 4, 3, 2, 1]
 
-# Step 7 (master plan): IFVG inversion speed gate.
+# Step 7 (master plan): IFVG inversion speed gate — first-touch window.
 # From PB Trading transcript: inversion must fire within 4 candles of first FVG interaction.
-# At 5+, the zone is "stale" — institutional flow has faded.  At 7+ it's definitely invalid.
-# Measured in bars of the FVG's OWN timeframe (4 × 5m = 20 min, 4 × 1m = 4 min).
+# Measured in bars of the FVG's OWN timeframe.
 IFVG_MAX_CANDLES_AFTER_TOUCH = 4
+
+# Creation-to-inversion gate (flat wall-clock minutes, TF-agnostic).
+# An FVG older than this cannot be inverted — the institutional flow behind it has faded.
+# 10 min = tight window, ensures we're trading the freshest FVGs on the current leg.
+IFVG_MAX_AGE_MINUTES = 10
 
 
 class IFVGDetector:
@@ -128,6 +132,16 @@ class IFVGDetector:
                 ]
             if not fvgs:
                 continue   # all FVGs on this TF are stale — try lower TF
+
+            # Creation-to-inversion gate: FVG must not be older than IFVG_MAX_AGE_MINUTES.
+            # Flat wall-clock minutes regardless of FVG timeframe — 10min stays 10min
+            # whether the FVG is 1m or 5m. Older FVGs = institutional flow already faded.
+            fvgs = [
+                f for f in fvgs
+                if (candle.ts - f.ts).total_seconds() / 60 <= IFVG_MAX_AGE_MINUTES
+            ]
+            if not fvgs:
+                continue   # all FVGs on this TF too old — try lower TF
 
             # This is the highest TF with FVGs. ALL must be inversed before entry.
             inversed_this_candle: list[FVG] = []
