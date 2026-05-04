@@ -284,6 +284,10 @@ All steps 1–8 done. Fixes E/F/H/I applied. Step 9 (HTF gate) disabled (wrong l
 - `visualize_legs.py`: generates per-day 5m candlestick charts with swing markers (▲▼), shaded manipulation legs, swept level lines, leg extreme × markers
 - Jan 2023 backtest with retroactive fix: **13 signals | 4W/5L/4BE | 31% WR | -1R** (was 11/3W/5L/3BE/-2R)
 
+**Session 3 changes (2026-05-04):**
+- `generate_leg_screenshots.py`: per-sweep zoomed charts (one per quality sweep). 3m candles, window = leg_start-10min to sweep+30min. Shows: full manipulation leg as colored background (axvspan), swept level dashed line, leg extreme dash-dot line + X marker, swing highs/lows ▲▼ from same day, vertical SWEEP marker. NO entry/SL/TP anywhere.
+- Uploaded all 127 Jan 2023 quality sweep charts to Discord (all successful)
+
 ---
 
 ### Cumulative changes (all committed):
@@ -409,11 +413,12 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 
 ### NEXT STEP (do this first when resuming):
 
-1. **Visual review of swing + legs charts** — run `python visualize_legs.py` and check if:
-   - Swing highs ▲ / swing lows ▼ are structurally correct
-   - Manipulation legs (shaded zones) cover the right candle range
-   - Leg extreme × aligns with the actual wick tip of the leg
-   Then report back — if swings look wrong, adjust `SWING_VIZ_LEFT/RIGHT` params in `run_legs_scan.py`.
+1. **Visual review of per-sweep Discord charts** — 127 Jan 2023 charts were uploaded to Discord in session 3. Review them to verify:
+   - Swing highs ▲ / swing lows ▼ are structurally correct (left=5, right=2 on 5m)
+   - Manipulation legs (blue/orange shading) cover the right candle range
+   - Leg extreme (gold dash-dot line + X) aligns with the actual wick tip
+   - Swept level dashed line is at the right price
+   If swings look wrong, adjust `SWING_VIZ_LEFT/RIGHT` params in `run_legs_scan.py` and regenerate.
 
 2. **Add IFVG rejection debug counters** to `_try_model1` in `confluence.py`. Count rejections at each gate:
    - displacement failed
