@@ -67,6 +67,11 @@ class ConfluenceEngine:
         # Tracks rounded price → so same price from different level sources is also blocked.
         self._consumed_prices: set[float] = set()
 
+        # Quality sweeps from the most recent update() call.
+        # Populated after wick-penetration + leg-significance gates pass (before IFVG wait).
+        # Used by run_legs_scan.py for legs-only visualization.
+        self._last_quality_sweeps: list[Sweep] = []
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_liquidity_levels(self, levels: list[LiquidityLevel]) -> None:
@@ -92,6 +97,7 @@ class ConfluenceEngine:
         """
         now = candle.ts
         signals: list[Signal] = []
+        self._last_quality_sweeps = []
 
         # 1. Expire old setups
         self._active_setups = [s for s in self._active_setups if not s.is_expired(now)]
@@ -155,6 +161,9 @@ class ConfluenceEngine:
             # Quality gate 2: manipulation leg must be large enough (real directional move)
             if not self._leg_is_significant(sweep, ltf_candles_1m, atr14):
                 continue
+
+            # Gates 1 + 2 passed — expose for legs-only visualization
+            self._last_quality_sweeps.append(sweep)
 
             setup = self._create_setup(sweep, now)
 
@@ -375,6 +384,20 @@ class ConfluenceEngine:
         # Barely clipping the far edge = weak inversion. Want strong displacement.
         if not self._ifvg_close_is_strong(ifvg, candle):
             return None
+
+        # Retroactive leg extreme: rescan from leg_start_ts to current IFVG candle.
+        # Initial estimate was capped at sweep.ts; the leg often extends a few bars further
+        # before reversing. Re-scanning to the IFVG candle guarantees the SL lands at
+        # the actual wick extreme, not the sweep-time estimate.
+        _ltf_1m = candles_by_tf.get(1, [])
+        _leg_cap_ts = setup.sweep.ts - timedelta(minutes=self._MAX_LEG_LOOKBACK_MIN)
+        _eff_start = max(setup.sweep.leg_start_ts, _leg_cap_ts) if setup.sweep.leg_start_ts else _leg_cap_ts
+        _leg_range = [c for c in _ltf_1m if _eff_start <= c.ts <= candle.ts]
+        if _leg_range:
+            if setup.direction == TradeDirection.LONG:
+                setup.sweep.leg_extreme_candle = min(_leg_range, key=lambda c: c.low)
+            else:
+                setup.sweep.leg_extreme_candle = max(_leg_range, key=lambda c: c.high)
 
         # TP1 is always fixed 1R (Step 5 — master plan)
         sl, tp1, tp2, tp1_label = self._calculate_targets(setup, candle)

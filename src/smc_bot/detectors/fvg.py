@@ -21,10 +21,9 @@ Min size: optional filter — gaps smaller than min_size pts are ignored.
   Pine uses ATR(200) × 0.25. Callers should pass appropriate min_size per TF.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from ..data.candle import Candle
 
@@ -49,16 +48,14 @@ class FVG:
     bar_index: int = 0      # which bar (update call #) this FVG was created on
 
     # Leg tracking — which sweep leg "sponsored" this FVG
-    leg_sweep_ts: Optional[datetime] = None
+    leg_sweep_ts: datetime | None = None
 
     mitigated: bool = False
-    mitigated_ts: Optional[datetime] = None
+    mitigated_ts: datetime | None = None
     inverted: bool = False
 
-    # Speed gate (Step 7 — master plan): track the first bar the FVG zone was touched.
-    # If inversion fires > IFVG_MAX_CANDLES_AFTER_TOUCH bars later → reject signal.
     # bar_index is set at creation; first_touch_bar is set on the first interaction.
-    first_touch_bar: Optional[int] = None
+    first_touch_bar: int | None = None
 
     @property
     def ce(self) -> float:
@@ -121,14 +118,11 @@ class FVGTracker:
                 self.active.append(new)
                 new_fvgs.append(new)
 
-        # Check mitigation then expiry
         current = candles[-1] if candles else None
         self._check_mitigation(current)
         if self.inversion_window > 0:
             self._expire_old()
 
-        # Track first touch: record bar_count when price first enters the FVG zone.
-        # "Interaction" = any candle whose range overlaps the zone (wick enters the zone).
         if current is not None:
             for fvg in self.active:
                 if fvg.first_touch_bar is None:
@@ -202,11 +196,7 @@ class FVGTracker:
 
     @staticmethod
     def _is_mitigated(fvg: FVG, candle: Candle) -> bool:
-        """
-        Mitigation = candle BODY closes beyond the far edge.
-        Pine: min(open,close) < fvg.bot  OR  max(open,close) > fvg.top
-        Python body_low = min(open,close), body_high = max(open,close) — same thing.
-        """
+        """Mitigation = candle body closes beyond the far edge."""
         if fvg.kind == FVGType.BULLISH:
             return candle.body_low < fvg.bottom
         else:

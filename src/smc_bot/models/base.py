@@ -2,7 +2,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Optional
 
 from ..detectors.sweep import Sweep
 from ..detectors.ifvg import IFVG
@@ -34,10 +33,10 @@ class Setup:
     expires_ts: datetime            # setup is invalidated after this
 
     # Filled when entry model fires
-    model: Optional[ModelType] = None
-    ifvg: Optional[IFVG] = None
-    cisd: Optional[CISDSignal] = None
-    smt: Optional[SMTSignal] = None
+    model: ModelType | None = None
+    ifvg: IFVG | None = None
+    cisd: CISDSignal | None = None
+    smt: SMTSignal | None = None
 
     # Optional bonus confirmations
     smt_confirmed: bool = False
@@ -69,19 +68,19 @@ class Signal:
     confluence_desc: str = ""    # human-readable confluence summary for journal/Notion
 
     # FVG zone coordinates (for chart drawing on screenshots)
-    fvg_top: Optional[float] = None
-    fvg_bottom: Optional[float] = None
-    fvg_ts: Optional[datetime] = None    # when the FVG formed (left edge of rectangle)
-    fvg_kind: Optional[str] = None       # 'bullish' or 'bearish' → green or red rectangle
+    fvg_top: float | None = None
+    fvg_bottom: float | None = None
+    fvg_ts: datetime | None = None    # when the FVG formed (left edge of rectangle)
+    fvg_kind: str | None = None       # 'bullish' or 'bearish' → green or red rectangle
 
     # Sweep wick (actual candle extreme that swept the level, for $ marker)
-    sweep_wick: Optional[float] = None
+    sweep_wick: float | None = None
 
     # SMT drawing coords (orange trend line between diverging wicks)
-    smt_ts_a: Optional[datetime] = None
-    smt_price_a: Optional[float] = None
-    smt_ts_b: Optional[datetime] = None
-    smt_price_b: Optional[float] = None
+    smt_ts_a: datetime | None = None
+    smt_price_a: float | None = None
+    smt_ts_b: datetime | None = None
+    smt_price_b: float | None = None
 
     # Scoring
     mandatory_passed: bool = True

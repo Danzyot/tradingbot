@@ -68,7 +68,6 @@ class CISDDetector:
 
         Returns the CISD from the highest-priority timeframe (5m > 3m > 1m).
         """
-        from .ifvg import TF_PRIORITY
         from ..models.base import TradeDirection
 
         if direction == TradeDirection.LONG:
