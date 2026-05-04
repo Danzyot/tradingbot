@@ -268,13 +268,21 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ---
 
-## Current State — Where We Left Off (last updated 2026-05-04)
+## Current State — Where We Left Off (last updated 2026-05-04, session 2)
 
 ### CRITICAL: Read before coding anything
 
-All steps 1–8 done. Fixes E/F/H/I applied. Step 9 (HTF gate) disabled (wrong logic). GitHub up to date at commit `07fac1f`.
+All steps 1–8 done. Fixes E/F/H/I applied. Step 9 (HTF gate) disabled (wrong logic). GitHub up to date at commit `aff92a0`.
 
 **KEY FINDING (2026-05-04):** Jun 2023 sweep-only mode = **23 sweeps detected → only 1 IFVG signal**. The IFVG qualification chain is the bottleneck, NOT sweep detection. In strong-trend markets, manipulation-leg FVGs tend to be small and fail the 2pt strong-close gate. Need to investigate rejection counts at each IFVG filter stage.
+
+**Session 2 changes (commit aff92a0):**
+- Fixed circular import in `cisd.py` (was broken: TYPE_CHECKING guard removed by mistake)
+- `confluence.py`: retroactive leg extreme — at IFVG fire time, rescan from `leg_start_ts` to current candle (not capped at `sweep.ts`). SL now at TRUE leg extreme wick.
+- `confluence.py`: `_last_quality_sweeps` list populated after each `update()` call (sweeps passing wick+leg gates, before IFVG)
+- `run_legs_scan.py`: scans all quality sweeps + 5m swing points → `data/legs_scan.json`
+- `visualize_legs.py`: generates per-day 5m candlestick charts with swing markers (▲▼), shaded manipulation legs, swept level lines, leg extreme × markers
+- Jan 2023 backtest with retroactive fix: **13 signals | 4W/5L/4BE | 31% WR | -1R** (was 11/3W/5L/3BE/-2R)
 
 ---
 
@@ -365,8 +373,12 @@ Added `LTF_FVG_MIN_SIZE = {1:2.0, 2:2.5, 3:3.0, 4:3.5, 5:4.0}` to FVGTracker ini
 
 Previously (with bugs A-D): Q1 2023 = 44 signals, 43% WR, -1.83R net.
 
-**January 2023 (with fixes H+I, 2026-05-04):** 11 signals | 3W/5L/3BE | 27% WR | -2R net
+**January 2023 (with fixes H+I, 2026-05-04, session 1):** 11 signals | 3W/5L/3BE | 27% WR | -2R net
 - Added 1 new signal (Jan-10 14:46 SHORT) from the TF-relative age gate fix — that signal lost
+
+**January 2023 (with retroactive leg fix, 2026-05-04, session 2):** 13 signals | 4W/5L/4BE | 31% WR | -1R net
+- Retroactive SL fix widened stop placement → 2 more signals now meet min RR 1.0
+- Note: full-month runs show 2 apparent duplicates on Jan 30 (different setups, same minute); isolated Jan 30 run shows 2 unique signals correctly — likely a pre-existing concurrent-limit edge case
 
 **June 2023 2-week (2023-06-05 to 2023-06-16):** 1 signal | 0W/1L/0BE | 0% WR | -1R
 - Sweep-only mode showed 23 sweeps → only 1 IFVG signal (4% conversion)
@@ -397,7 +409,13 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 
 ### NEXT STEP (do this first when resuming):
 
-1. **Add IFVG rejection debug counters** to `_try_model1` in `confluence.py`. Count rejections at each gate:
+1. **Visual review of swing + legs charts** — run `python visualize_legs.py` and check if:
+   - Swing highs ▲ / swing lows ▼ are structurally correct
+   - Manipulation legs (shaded zones) cover the right candle range
+   - Leg extreme × aligns with the actual wick tip of the leg
+   Then report back — if swings look wrong, adjust `SWING_VIZ_LEFT/RIGHT` params in `run_legs_scan.py`.
+
+2. **Add IFVG rejection debug counters** to `_try_model1` in `confluence.py`. Count rejections at each gate:
    - displacement failed
    - no FVG on leg
    - ifvg_detector returned None (age gate? speed gate? no inversion?)
@@ -406,25 +424,14 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
    - rr < min_rr
    Re-run Jun 2023 with debug mode and see which gate rejects the most setups.
 
-2. **If strong_close (2pt) is the culprit**: test 1pt threshold and compare signal count/quality.
-
-3. **Generate screenshots** of Jun 2023's 1 existing trade:
-   ```
-   copy C:\tmp\bt_jun23.db data\journal.db
-   python generate_screenshots.py
-   ```
+3. **If strong_close (2pt) is the culprit**: test 1pt threshold and compare signal count/quality.
 
 4. **After debug investigation**, implement daily-bias HTF gate (Step 9 correct ICT version):
    - Daily candle direction: `d_close > d_open` → bullish bias → weight longs
    - Premium/discount: price above midpoint of last 5 daily range → premium → weight shorts
    - Soft filter (weight/score adjustment), not hard block
 
-5. **Python SMC libraries found** (for cross-reference):
-   - `pip install smartmoneyconcepts` (joshyattridge) — FVG, order blocks, swing H/L
-   - `vlex05/SMC-Algo-Trading` — bot framework
-   - Check their FVG detection logic against ours for any differences
-
-6. **Notion progress page**: needs NOTION_TOKEN added to Windows user env variables.
+5. **Notion progress page**: needs NOTION_TOKEN added to Windows user env variables.
    Run `create_notion_progress.py` after setting the token.
 
 ---

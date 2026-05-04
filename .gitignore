@@ -9,6 +9,7 @@ data/journal.db
 data/journal.db-shm
 data/journal.db-wal
 data/screenshots/
+data/legs_scan.json
 bt_*.txt
 
 # Transcript downloads (large, regenerable via yt-dlp)
