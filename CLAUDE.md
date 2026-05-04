@@ -268,196 +268,172 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ---
 
-## Current State — Where We Left Off (last updated 2026-04-13)
+## Current State — Where We Left Off (last updated 2026-05-04)
 
-### What was built across sessions (cumulative):
-- **SL fixed**: `leg_extreme_candle` (actual manipulation wick extreme, 90-min capped) → `low - 2.0` for longs, `high + 2.0` for shorts. Separate from `sweep_candle` (close-back detection candle) which is only used for quality gate checks.
-- **RR-aware DOL target**: `_find_dol_targets` skips levels too close to satisfy `min_rr` given the real SL distance — no more 0.4R trades
-- **5-min sweep cooldown** (changed from 120 min)
-- **EQH/EQL tightened**: 0.25pt tolerance, S-tier (3+ touches), A-tier (2 touches + gap≥5)
-- **HTF FVG liquidity levels**: 15m, 30m, 1H, 4H unmitigated FVG edges as sweep targets
-- **FVG size filter** (backtest.py): 15m≥5pt, 30m≥8pt, 1H≥10pt, 4H≥15pt
-- **FVG recency cap**: 3 most recent unmitigated FVGs per TF (`MAX_FVG_LEVELS_PER_TF=3`)
-- **Hard DOL requirement**: TP1 must be a real opposing major level ≥15pts away — no R fallback
-- **TF_PRIORITY = [5,4,3,2,1]** + 2m/4m FVG trackers in backtest (Priority 1 ✓)
-- **All FVGs of highest TF on leg must invert before entry** (Priority 2 ✓)
-- **Sweep candle body dominance**: body ≥ 50% of total range in sweep.py `_check()` (Priority 3 ✓)
-- **Strong IFVG close**: close ≥ 2pt beyond FVG far edge (`_ifvg_close_is_strong`) (Priority 4 ✓)
-- **DOL = LRL only**: hard DOL requirement, no HRL targets (Priority 5 ✓)
-- **IFVG inversion candle body dominance**: body ≥ 50% of range (`_ifvg_close_is_body_dominant`)
-- **near_htf_open filter**: blocks IFVG signal emission 1-5 min before 9:30/10:00/10:30/15:00/15:30 ET
-- **90-min leg FVG cap**: FVGs on manipulation leg must be within 90 min of sweep candle
-- **Setup invalidation**: when re-sweep fires near existing setup level (within 5pt), old setup killed
-- **ATR-adaptive sweep gates**: wick penetration, leg size, displacement all scale with ATR(14)
-- **Multi-candle sweep detection** (SweepType.GRAB / SWEEP)
-- **Displacement check**: ≥1 body-dominant reversal candle within 20 bars of sweep
+### CRITICAL: Read before coding anything
 
-### Research synthesis priority list — status:
-| # | Change | Status |
-|---|--------|--------|
-| 1 | TF_PRIORITY = [5,4,3,2,1] + 2m/4m trackers | ✅ Done |
-| 2 | All FVGs of same TF on leg must invert | ✅ Done (but see Bug B below) |
-| 3 | Sweep candle body ≥ 50% of range | ❌ WRONG — remove this filter (see Bug C) |
-| 4 | Strong IFVG close ≥ 2pt beyond far edge | ✅ Done |
-| 5 | DOL = LRL only | ✅ Done |
-| 6 | BE at first internal H/L (not at 1R) | ❌ Not yet |
-| 7 | Intermediate H/L as top-tier sweep targets | Partial |
-| 8 | HTF alignment gate (4H 72h momentum) | ⚠️ Written but not committed — needs tuning |
+All steps 1–8 are done and committed. Step 9 (HTF gate) was implemented and then **disabled** because the logic was wrong. The current session (2026-05-04) also applied Fixes E and F (EQH/EQL improvements). GitHub is up to date at commit `61b9ee6`.
 
-### CONFIRMED BUGS (from agent code review 2026-04-14):
+**Active investigation**: January 2023 signal count is lower than expected (~5-15 signals vs 20 pre-fix). Cause is being traced — signal count needs to be verified before expanding the date range. See "Open question" below.
 
-**Bug A — Mitigation race / late entry** (`detectors/fvg.py`, `detectors/ifvg.py`)
-- Root cause: `fvg_trackers[tf].update()` runs BEFORE `engine.update()` in backtest loop
-- When the inversion candle also mitigates the FVG, `_check_mitigation` removes the FVG from `tracker.active` BEFORE the IFVG detector sees it
-- Result: signal fires on a LATER candle (or not at all for that FVG), giving terrible RR
-- Fix: In `_collect_leg_fvgs` and `_update_leg_fvgs`, also include FVGs from `tracker.mitigated` where `fvg.mitigated_ts == current_candle.ts`
+---
 
-**Bug B — Mitigation ≠ Inversion (false "cleared" status)** (`detectors/ifvg.py` line ~116)
-- Root cause: `IFVGDetector.check()` treats a mitigated FVG as "cleared" for the "all must invert" rule
-- Mitigation uses `body_high > fvg.top` (= open for bearish candle). A bearish candle with `open > fvg.top` but `close < fvg.top` mitigates the FVG without inverting it
-- Next candle sees `fvg.mitigated and fvg.mitigated_ts != candle.ts` → counts as cleared → can fire signal when close never exceeded FVG edge
-- This explains the "candle didn't close over FVG" trades in screenshots
-- Fix: Track inversion explicitly. Only count FVG as cleared if `close > fvg.top` (long) or `close < fvg.bottom` (short) was observed on a prior candle. Add `inverted: bool` flag to FVG, set only on inversion, not on mitigation
+### Cumulative changes (all committed):
 
-**Bug C — Wrong filter on sweep candle** (`detectors/sweep.py` `_check()`)
-- Root cause: Body ≥ 50% filter applied to the SWEEP candle. But sweep candles should show REJECTION (big wick, small body). Sources confirm: "WICKS DO DAMAGE" on sweep candles, "BODIES TELL STORY" on inversion candles
-- This filter is filtering out VALID high-wick rejection sweeps
-- Fix: Remove body dominance check from `sweep.py _check()`. Body dominance stays only on IFVG inversion candle (already in `_ifvg_close_is_body_dominant`)
+**Detection quality**
+- `TF_PRIORITY = [5,4,3,2,1]` + 2m/4m FVG trackers in backtest
+- All FVGs of highest TF on leg must invert before entry (FVG `inverted` flag)
+- Strong IFVG close: candle closes ≥ 2pt beyond FVG far edge (`_ifvg_close_is_strong`)
+- IFVG open-in-zone: candle.open must be within the FVG zone (not already past the edge)
+- IFVG inversion candle body dominance: body ≥ 50% of total range
+- IFVG speed gate: FVG first-touch to inversion ≤ 4 bars of FVG's own TF
+- 10-min FVG age gate: FVG must not be older than 10 min wall-clock at inversion time
+- EQH/EQL grouping now transitive (sort by price, sequential chain) ← Fix E
+- EQH/EQL tolerance widened 0.25pt → 1.0pt ← Fix F
 
-**Bug D — Mixed-candle wick quality check** (`models/confluence.py` `_sweep_has_valid_penetration`)
-- Root cause: Wick penetration uses `leg_extreme_candle`, but pin-bar shape check uses `sweep_candle` — two different candles for different sub-checks
-- A deep wick from a prior candle on the leg can satisfy the wick depth requirement while the actual sweep candle barely ticked the level
-- Fix: Both checks should use the same candle. Require `sweep_candle` itself to have minimum wick penetration. `leg_extreme_candle` only used for SL placement
+**Sweep quality**
+- Wick penetration + pin-bar shape + body return all checked on same `sweep_candle` (Bug D fix)
+- Body dominance check removed from sweep candle (Bug C fix — sweeps show REJECTION, not body)
+- ATR-adaptive gates: wick, leg size, displacement all scale with ATR(14)
+- Displacement check: ≥1 body-dominant reversal candle within 20 bars of sweep
+- Setup invalidation on re-sweep (within 5pt clears old setup)
+- 5-min sweep cooldown per level
+- 90-min cap on leg lookback for FVG collection
 
-### Signal count status (Q1 2023):
-| Month | Signals | W/L/BE | WR | Net R |
-|-------|---------|--------|-----|-------|
-| Jan 2023 | 20 | 8W/12L | 40% | -3.14R |
-| Feb 2023 | 15 | 8W/7L | 53% | +2.58R |
-| Mar 2023 | 9 | 3W/5L/1BE | 33% | -1.27R |
-| Q1 total | 44 | 19W/24L/1BE | 43% | -1.83R |
-- NOTE: These numbers contain false signals from Bugs A/B/C/D above. Real quality will shift after fixes.
+**SL / TP / BE**
+- SL: `leg_extreme_candle.low - 2.0` (long) / `leg_extreme_candle.high + 2.0` (short)
+- TP1: fixed 1R (entry ± risk). DOL level used as `tp2` runner label only
+- BE: triggers at first liquidity level between entry and TP1, BEFORE the standard 1R BE trigger
+
+**DOL targeting**
+- Sorted by tier: S (EQH/EQL) > A (unmitigated HTF FVGs) > B (session H/L, PDH/PDL, NWOG/NDOG)
+- Only S/A/B tier levels are valid DOL targets; F/C excluded
+- Min DOL distance: 15pt from entry
+
+**FVG mitigation race fix** (Bug A/B)
+- `_collect_leg_fvgs` uses `tracker.active + tracker.mitigated` — inversion candle can mitigate the FVG in the same bar it fires
+- `fvg.inverted` flag: set only when close passes the far edge, NOT on regular mitigation
+
+**Liquidity levels used as sweep targets**
+- S-tier: EQH/EQL (3+ touches or ≥4 bars separation)
+- A-tier: EQH/EQL (2 touches, 1-3 bars), PDH/PDL
+- B-tier: Asia/London/NY session H/L, NWOG/NDOG, major swing H/L (≥15pt wick)
+- HTF FVG edges (30m, 1H, 4H) used as A/B-tier sweep targets
+
+---
+
+### MASTER PLAN — Step status:
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Fix Bug A: mitigation race (tracker.mitigated) | ✅ Done |
+| 2 | Fix Bug B: inverted≠mitigated (fvg.inverted flag) | ✅ Done |
+| 3 | Fix Bug C: remove body dominance from sweep candle | ✅ Done |
+| 4 | Fix Bug D: wick check uses sweep_candle consistently | ✅ Done |
+| 5 | Fixed 1R TP; DOL as runner reference only | ✅ Done |
+| 6 | BE at first liquidity level between entry and TP1 | ✅ Done |
+| 7 | IFVG speed gate (4-bar first-touch window) | ✅ Done |
+| 8 | IFVG open-in-zone check + DOL tier sorting | ✅ Done |
+| E | EQH/EQL transitive grouping (sort-then-chain) | ✅ Done |
+| F | EQH/EQL tolerance 0.25pt → 1.0pt | ✅ Done |
+| 9 | HTF alignment gate | ⚠️ DISABLED — see below |
+
+---
+
+### Step 9 (HTF Gate) — DISABLED, here's why:
+
+Implemented `_htf_regime_allows()` in `models/confluence.py` — 4H momentum > 150pts filter.
+
+**Problem**: ICT setups are REVERSALS, not trend continuations. Original gate blocked SHORT entries when 4H was bullish — exactly backwards. ICT shorts when price is at PREMIUM (just had a big 4H rally). Debug confirmed: the gate blocked 60 entries in a single 5-day window (Feb 6-10 2023), collapsing Feb/Mar signals to 0.
+
+**What the correct HTF gate should do**: Filter based on DAILY BIAS (daily candle direction and premium/discount position), NOT on 4H momentum direction. Example: "Daily candle is decisively bearish → prefer shorts, be more conservative on longs." This is more nuanced and not yet implemented.
+
+**Method preserved**: `_htf_regime_allows()` exists in `models/confluence.py` but is not called. Constants `_HTF_REGIME_THRESHOLD_PTS` and `_HTF_REGIME_LOOKBACK_BARS` kept for future use.
+
+---
+
+### Fix G (LTF FVG min size) — ATTEMPTED, REVERTED:
+
+Added `LTF_FVG_MIN_SIZE = {1:2.0, 2:2.5, 3:3.0, 4:3.5, 5:4.0}` to FVGTracker init. Reverted because it blocked legitimate manipulation-leg FVGs on quiet/low-volatility days (not all FVGs are 2pt+). The existing `_ifvg_close_is_strong` check (2pt close beyond FVG edge) already prevents entries from tiny FVGs.
+
+---
+
+### Signal count — current state (post all fixes):
+
+Previously (with bugs A-D): Q1 2023 = 44 signals, 43% WR, -1.83R net.
+
+**January 2023 (verified 2026-05-04):** 10 signals | 3W/4L/3BE | 30% WR | -1R net
+- All within killzones, all sweeping S/A/B-tier levels
+- Jan 19 had 2 consecutive LONG losses (same day, different sessions)
+- Jan 30 had 2 signals (WIN + BE same day)
+
+**User target: 1-5 trades per day** (5-25 per week). January averages ~0.45/day — below target. Feb/March not yet run post-fixes. Expected total Q1 ~25-30 signals after removing false signals.
+
+---
+
+### Signal count investigation — RESOLVED:
+
+January 2023: confirmed 10 signals (was 20 pre-fix). Drop is expected — fixes removed false signals.
+Earlier readings of 3 signals were DB concurrency bugs (reading mid-write).
+
+Feb/March 2023 not yet run post-fixes. Do a short 2-week window before expanding.
+
+---
 
 ### DB Concurrency Warning:
-Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use unique `db_path` per run:
+Multiple simultaneous `run_backtest.py` runs corrupt journal.db. Always use a unique `db_path`:
 ```python
-run_backtest(..., db_path=Path('C:/tmp/bt_clean.db'), clear_db=True)
+run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 ```
-Then copy result to data/journal.db once done.
 
-### MASTER PLAN — Next steps (priority order, do NOT start without reading this):
+---
 
-**STEP 1 — Fix Bug A (mitigation race / late entry)** ✅ DONE
-- `_collect_leg_fvgs` includes `tracker.mitigated` — FVGs mitigated on the inversion candle are still visible to IFVG detector
+### NEXT STEP (do this first when resuming):
 
-**STEP 2 — Fix Bug B (mitigation ≠ inversion)** ✅ DONE
-- `inverted: bool = False` on FVG dataclass
-- `IFVGDetector.check()` uses `fvg.inverted` — only counts FVG as "cleared" if it was actually inverted via `close > fvg.top`
-- `_is_inversed` uses `candle.close` (not body_high/body_low)
+1. **Run a fresh 2-week backtest** on random dates (not Jan 2023 — use something like 2023-06-05 to 2023-06-16 or 2023-09-11 to 2023-09-22). Use `db_path=Path('C:/tmp/bt_XXXX.db'), clear_db=True`.
+2. **Run `generate_screenshots.py`** after copying the DB to `data/journal.db` — uploads charts to Discord for visual review.
+3. **Visually review trades in Discord** — are the sweeps real? Are the FVG inversions clean?
+4. **Next quality improvement**: implement proper daily-bias HTF filter (Step 9 with correct ICT logic):
+   - Look at daily candle direction: `d_close > d_open` → bullish day → prefer longs
+   - Premium/discount: price above midpoint of last 5 daily range → premium → prefer shorts
+   - Apply as a SOFT filter (prefer one direction but don't block the other), not a hard block
+5. **Also consider**: tightening EQH/EQL detection on 1m (for the manipulation leg pivot detection, not the 15m levels). The bot uses swing_ltf (left=20, right=5) for manipulation leg detection — verify this is picking up proper ICT structural swings.
 
-**STEP 3 — Fix Bug C (remove body dominance from sweep candle)** ✅ DONE
-- No body dominance check in `detectors/sweep.py` `_check()`
-- Body dominance only on IFVG inversion candle (`_ifvg_close_is_body_dominant` in confluence.py)
+---
 
-**STEP 4 — Fix Bug D (sweep wick check same candle)** ✅ DONE
-- `_sweep_has_valid_penetration` uses `sweep_candle` for all 3 checks consistently
-
-**STEP 5 — Change TP to fixed 1:1 (1R)** ✅ DONE
-- `_calculate_targets()`: TP1 = entry ± risk (always 1R)
-- DOL level lookup kept as `tp2` runner reference/label only
-- RR-aware DOL skipping removed — 1R TP always fires
-- `tp1 is None` guards removed from `_try_model1`, `_try_model2`, `_try_sweep_entry`
-
-**STEP 6 — BE at intermediate liquidity level** ✅ DONE
-- `record_signal(signal, liquidity_levels=levels)` in backtest.py
-- `_be_level_price` stored per trade = nearest level between entry and TP1 at signal time
-- `check_outcomes()` checks `_be_level_price` BEFORE standard `be_trigger_r` BE trigger
-
-**STEP 7 — IFVG inversion speed gate** ✅ DONE
-- `first_touch_bar: Optional[int]` on FVG dataclass — set when price first enters the zone
-- `FVGTracker.update()` records first touch bar when `candle.low <= fvg.top and candle.high >= fvg.bottom`
-- `IFVGDetector.check()` filters out FVGs touched > `IFVG_MAX_CANDLES_AFTER_TOUCH = 4` bars ago
-
-**STEP 8 — IFVG full-body inversion + DOL tier sorting** ✅ DONE
-- `_is_inversed` now requires `candle.open <= fvg.top` (bullish) or `candle.open >= fvg.bottom` (bearish)
-  → Prevents continuation candles that opened PAST the far edge from triggering IFVG entry
-  → "Full inversion" = candle approaches from within/on-side of zone AND closes through far edge
-- `_find_dol_targets` now sorts by tier (S > A > B) first, then by proximity within same tier
-  → Per DOL cheat sheet: EQH/EQL (#1) beats FVG (#2) beats session H/L (#3) regardless of distance
-  → Filter: only S/A/B tier levels are valid DOL targets (F/C excluded)
-- Backtest validated on 2024-03-04 to 2024-03-15 (confirmed trade 4 filtered)
-
-**STEP 9 — HTF Alignment Gate** ⚠️ IMPLEMENTED BUT DISABLED
-- Method `_htf_regime_allows()` exists in `models/confluence.py` but is NOT called.
-- Original implementation was a momentum-following gate (block SHORT when 4H bullish momentum > 150pts).
-- PROBLEM: This is backwards for ICT. ICT takes SHORTS when price is at PREMIUM (4H just rallied),
-  not longs. The gate blocked 60 entries in 5 days → collapsed Feb/Mar 2023 from 24 signals to 0.
-- CORRECT ICT HTF filter = DAILY BIAS, not 4H momentum direction.
-  e.g. "Daily candle is bearish → prefer shorts" (still not blocking longs outright).
-- Decision: disable until a proper premium/discount daily-bias implementation is ready.
-- Fix G (LTF FVG min size) also reverted: min_size=2.0 for 1m blocked 60% of manipulation-leg FVGs
-  on quieter days; the existing 2pt strong-close quality gate already handles micro-FVGs.
-
-### DOL tier hierarchy (from cheat sheet — wire into target selection):
+### DOL tier hierarchy (from cheat sheet):
 1. **S-tier:** EQH/EQL (especially when aligned with PDH/PDL/PWH/PWL)
-2. **A-tier:** Unmitigated FVGs (bullish FVG below for long target, bearish above for short)
-3. **B-tier:** Previous session H/L (PDH/PDL, Asia/London/NY session H/L), NWOG/NDOG
-4. **B-tier:** Data highs/lows (news candle extremes — if one side taken, target other side)
-5. **B-tier:** Intermediate H/L inside/adjacent to FVG (careful: may be "protected" H/L)
-- **F-tier (ignore):** H/L that took out another H/L inside an FVG — trap/false signal
-
-### Additional fixes applied (2026-05-03) — post agent audit:
-
-**Fix E — EQH/EQL grouping non-transitivity** (`detectors/liquidity.py`, `_group_equal`)
-- Bug: old code compared each new point only against the GROUP'S FIRST point (not the nearest in-group point)
-  → Example: [100.0, 100.6, 1.1] with 0.7pt tolerance: 100.0+100.6 grouped, 1.1 skipped because |100.0-1.1|>0.7 even though |100.6-1.1|<=0.7
-- Fix: sort points by price first, then compare each new point to the LAST point in current group (sequential chain)
-- This guarantees transitive clustering — adjacent prices within tolerance always land in one group
-
-**Fix F — EQH/EQL tolerance too tight** (`detectors/liquidity.py`, `detect_eqhl`)
-- Old: 0.25pt (1 tick) — missed equal levels 2-4 ticks apart that are visually/structurally identical
-- Fix: widened to 1.0pt (4 ticks). NQ equal highs are rarely perfectly flat; 1pt captures real clustering without being so wide it groups different levels
-- Evidence: agent confirmed NQ 0.25pt tolerance required pixel-perfect equality, which never happens in practice
-
-**Fix G — Missing min_size filter on LTF FVGTrackers** (`engine/backtest.py`)
-- Bug: 1m/2m/3m/4m/5m FVGTrackers created with `min_size=0.0` — any tick-sized gap could trigger IFVG entry
-- Root cause: `LTF_FVG_MIN_SIZE` wasn't applied to the IFVG trackers; only HTF trackers had min_size for DOL levels
-- Fix: Added `LTF_FVG_MIN_SIZE = {1: 2.0, 2: 2.5, 3: 3.0, 4: 3.5, 5: 4.0}` and wired into `FVGTracker` constructor
-- Now sub-2pt gaps on 1m, sub-3pt on 3m, etc. are ignored — real institutional imbalances only
-
-**Fix G reverted**: LTF FVG min size removed — it blocked 60% of manipulation-leg FVGs
-on quiet days. 2pt strong-close requirement already handles micro-FVG false entries.
-
-### What's currently uncommitted:
-- Fixes E + F, Step 9 revert of G + disable of HTF gate — commit now
+2. **A-tier:** Unmitigated FVGs (bullish FVG below for long, bearish above for short)
+3. **B-tier:** PDH/PDL, Asia/London/NY session H/L, NWOG/NDOG
+4. **B-tier:** Data highs/lows (news candle extremes)
+5. **B-tier:** Intermediate H/L inside/adjacent to FVG
+- **F-tier (ignore):** H/L that took out another H/L inside an FVG
 
 ### Multi-agent setup:
 - Claude 1 (this): main coding session, auto-pushes to GitHub on every commit
 - Claude 2: second subscription, picks up from GitHub + CLAUDE.md
 - Claude CoWork: reads Pine Script via TradingView MCP, produces fix tables
-- Gemini: token-heavy non-coding tasks — Pine Script research, long doc analysis, indicator comparisons
 
-### Gemini use cases (to save Claude tokens):
-- Reading and summarizing long Pine Script source files
-- Comparing multiple indicator implementations side-by-side
-- ICT/SMC concept research from forums/docs
-- NOT for: coding, file edits, commits, backtest runs
+### Working preferences:
+- Fully autonomous mode — continue without asking for approval on each step
+- Use subagents freely (research, code audit, web search)
+- Short validation windows (1-2 weeks max per run, not full Q1)
+- Commit after every logical unit of work — both subscriptions share GitHub
+- After fixes: run backtest → upload screenshots to Discord → visually review → iterate
 
 ---
 
 ## Known Issues / TODO
 
-1. **IFVG inversion trigger**: confirmed using `close > fvg.top` (not wick). Resolved.
-2. **EQH/EQL tolerance**: 0.05% (~10pts at NQ 20k) likely too wide — Pine probably uses fixed 1-3pts. Fix: change to absolute point tolerance.
-3. **SMT temporal proximity**: no check that NQ/ES diverging swings occurred within N bars — could compare swings hours apart.
-4. **CISD reference**: uses most recent opposing candle, not confirmed swing point. Pine's ChoCH uses structural swing.
-5. **Swing params**: left=5, right=2 not yet verified against Pine's ta.pivothigh() params.
-6. **IFVG FVG must be on leg**: confirmed implemented via `_find_leg_start()` + `_collect_leg_fvgs()`. Monitor for edge cases.
-7. **HTF FVG drawing coords**: need to store zone coords when level.kind is *_fvg_high/*_fvg_low for screenshots.
-8. **Live data loop**: not built yet. Future phase.
-9. **Live executions**: future phase, after everything validated.
-10. **C-tier OBs**: order blocks not yet implemented.
-11. **TradingView MCP**: can't navigate to Jan 2023 — use generate_screenshots.py (mplfinance) instead.
+1. **Signal count** — currently ~5-15/month in Jan 2023 post-fixes. Target is 1-5/day. Active investigation (see NEXT STEP above).
+2. **HTF alignment gate** — disabled; needs daily-bias implementation. Do NOT re-enable the momentum version.
+3. **SMT temporal proximity** — checked: `smt.py` already has 4-bar proximity window. Not a current issue.
+4. **CISD reference** — uses most recent opposing candle, not structural swing. Model 2 is disabled; low priority.
+5. **HTF FVG drawing coords** — screenshots don't draw the HTF FVG zone box when the swept level was an FVG edge. The data is in `level.kind` (`60m_fvg_high`, etc.) but `fvg_top/bottom` coords for the zone aren't stored.
+6. **Daily bias filter** — proper ICT premium/discount approach not yet implemented (Step 9 placeholder).
+7. **Live data loop** — not built yet. Future phase.
+8. **C-tier order blocks** — not yet implemented.
+9. **TradingView MCP** — can't navigate to Jan 2023 (3yr+ ago). Use `generate_screenshots.py` instead.
 
 ---
 
