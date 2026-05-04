@@ -279,7 +279,7 @@ class ConfluenceEngine:
             return None
 
         target_kind = (
-            SwingType.HIGH if sweep.direction.value == "bullish"
+            SwingType.HIGH if sweep.direction == SweepDirection.BULLISH
             else SwingType.LOW
         )
         candidates = [s for s in swings if s.kind == target_kind and s.ts < sweep.ts]
@@ -324,7 +324,7 @@ class ConfluenceEngine:
             return False
 
         min_body = max(self._BASE_MIN_DISPLACEMENT_BODY_PTS, atr14 * 0.30)
-        post_sweep = [c for c in ltf if c.ts > sweep.ts][:20]
+        post_sweep = [c for c in ltf if c.ts > sweep.ts][:30]
         for c in post_sweep:
             body = abs(c.close - c.open)
             if body < min_body:
@@ -591,7 +591,7 @@ class ConfluenceEngine:
         min_wick = max(self._BASE_MIN_WICK_PENETRATION, atr14 * wick_mult)
         min_close = max(self._BASE_MIN_CLOSE_RETURN, atr14 * self._ATR_MULT_CLOSE)
 
-        if sweep.direction.value == "bullish":
+        if sweep.direction == SweepDirection.BULLISH:
             wick_through = sweep.level.price - c.low   # sweep_candle wick depth
             close_return = c.body_low - sweep.level.price  # close-back candle body
             return (
@@ -632,7 +632,7 @@ class ConfluenceEngine:
         if not leg_candles:
             return True
 
-        if sweep.direction.value == "bullish":
+        if sweep.direction == SweepDirection.BULLISH:
             leg_high = max(x.high for x in leg_candles)
             return (leg_high - c.low) >= min_leg
         else:

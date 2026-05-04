@@ -12,7 +12,9 @@ run_backtest(
     min_rr=1.0,
     starting_balance=50_000.0,
     risk_pct=0.005,                    # 0.5% risk per trade
-    date_from="2023-01-02",            # full January 2023
-    date_to="2023-01-31",
-    sweep_entry=False,                 # IFVG mode: require sweep → IFVG inversion
+    date_from="2023-06-05",
+    date_to="2023-06-16",
+    db_path=Path('C:/tmp/bt_jun23.db'),
+    clear_db=True,
+    sweep_entry=False,                 # IFVG mode
 )

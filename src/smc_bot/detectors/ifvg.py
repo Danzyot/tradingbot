@@ -57,20 +57,15 @@ class IFVG:
         return self.source_fvg.bottom
 
 
-# Priority order for timeframe selection (highest first).
-# 5m is the absolute max for IFVG — never take 15m+ IFVG (trade lifecycle too long).
-# All five LTF timeframes covered to find the highest available on the leg.
+# Priority order for timeframe selection (highest first, max 5m).
 TF_PRIORITY = [5, 4, 3, 2, 1]
 
-# Step 7 (master plan): IFVG inversion speed gate — first-touch window.
-# From PB Trading transcript: inversion must fire within 4 candles of first FVG interaction.
-# Measured in bars of the FVG's OWN timeframe.
+# Speed gate: inversion must fire within N bars (of the FVG's own TF) of first zone touch.
 IFVG_MAX_CANDLES_AFTER_TOUCH = 4
 
-# Creation-to-inversion gate (flat wall-clock minutes, TF-agnostic).
-# An FVG older than this cannot be inverted — the institutional flow behind it has faded.
-# 10 min = tight window, ensures we're trading the freshest FVGs on the current leg.
-IFVG_MAX_AGE_MINUTES = 10
+# Max age gate: max_age_minutes = tf_minutes × IFVG_AGE_TF_MULT
+#   1m → 8 min   3m → 24 min   5m → 40 min
+IFVG_AGE_TF_MULT = 8
 
 
 class IFVGDetector:
@@ -114,12 +109,9 @@ class IFVGDetector:
                 if f.kind == expected_fvg_kind
             ]
             if not fvgs:
-                continue   # no FVGs of this TF on the leg — try lower TF
+                continue
 
-            # Step 7: speed gate — drop FVGs that have been "stale" too long.
-            # An FVG is stale if price first touched the zone but hasn't inverted within
-            # IFVG_MAX_CANDLES_AFTER_TOUCH bars of the FVG's own TF.
-            # We check this via the tracker's bar_count vs the FVG's first_touch_bar.
+            # Speed gate: drop FVGs touched but not inverted within the window.
             tracker = self.trackers.get(tf)
             if tracker is not None:
                 bar_now = tracker._bar_count
@@ -131,19 +123,18 @@ class IFVGDetector:
                     )
                 ]
             if not fvgs:
-                continue   # all FVGs on this TF are stale — try lower TF
+                continue
 
-            # Creation-to-inversion gate: FVG must not be older than IFVG_MAX_AGE_MINUTES.
-            # Flat wall-clock minutes regardless of FVG timeframe — 10min stays 10min
-            # whether the FVG is 1m or 5m. Older FVGs = institutional flow already faded.
+            # Age gate: TF-relative max age.
+            max_age = tf * IFVG_AGE_TF_MULT
             fvgs = [
                 f for f in fvgs
-                if (candle.ts - f.ts).total_seconds() / 60 <= IFVG_MAX_AGE_MINUTES
+                if (candle.ts - f.ts).total_seconds() / 60 <= max_age
             ]
             if not fvgs:
-                continue   # all FVGs on this TF too old — try lower TF
+                continue
 
-            # This is the highest TF with FVGs. ALL must be inversed before entry.
+            # Highest TF with FVGs — ALL must be inversed before entry fires.
             inversed_this_candle: list[FVG] = []
             all_clear = True
 
@@ -152,20 +143,17 @@ class IFVGDetector:
                     fvg.inverted = True
                     inversed_this_candle.append(fvg)
                 elif fvg.inverted:
-                    pass   # already inverted on a prior candle
+                    pass
                 else:
-                    all_clear = False   # still active, not yet inversed
+                    all_clear = False
                     break
 
             if not all_clear:
-                # Highest TF has pending FVGs — don't drop to lower TF, just wait
                 return None
 
             if not inversed_this_candle:
-                # All were pre-mitigated on prior candles, nothing to fire on now
                 return None
 
-            # Fire on the most recent FVG being inversed on this candle
             return IFVG(
                 source_fvg=inversed_this_candle[-1],
                 direction=ifvg_direction,
