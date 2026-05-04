@@ -272,9 +272,9 @@ Source: **Databento** (GLBX.MDP3, ohlcv-1m schema)
 
 ### CRITICAL: Read before coding anything
 
-All steps 1–8 are done and committed. Step 9 (HTF gate) was implemented and then **disabled** because the logic was wrong. The current session (2026-05-04) also applied Fixes E and F (EQH/EQL improvements). GitHub is up to date at commit `61b9ee6`.
+All steps 1–8 done. Fixes E/F/H/I applied. Step 9 (HTF gate) disabled (wrong logic). GitHub up to date at commit `07fac1f`.
 
-**Active investigation**: January 2023 signal count is lower than expected (~5-15 signals vs 20 pre-fix). Cause is being traced — signal count needs to be verified before expanding the date range. See "Open question" below.
+**KEY FINDING (2026-05-04):** Jun 2023 sweep-only mode = **23 sweeps detected → only 1 IFVG signal**. The IFVG qualification chain is the bottleneck, NOT sweep detection. In strong-trend markets, manipulation-leg FVGs tend to be small and fail the 2pt strong-close gate. Need to investigate rejection counts at each IFVG filter stage.
 
 ---
 
@@ -287,7 +287,8 @@ All steps 1–8 are done and committed. Step 9 (HTF gate) was implemented and th
 - IFVG open-in-zone: candle.open must be within the FVG zone (not already past the edge)
 - IFVG inversion candle body dominance: body ≥ 50% of total range
 - IFVG speed gate: FVG first-touch to inversion ≤ 4 bars of FVG's own TF
-- 10-min FVG age gate: FVG must not be older than 10 min wall-clock at inversion time
+- IFVG age gate: TF-relative — `max_age = tf_minutes × 8` (1m=8min, 3m=24min, 5m=40min) ← Fix H
+  (Was flat 10min — blocked all 5m FVGs since a 5m FVG takes 15min to form, leaving only 5min to invert)
 - EQH/EQL grouping now transitive (sort by price, sequential chain) ← Fix E
 - EQH/EQL tolerance widened 0.25pt → 1.0pt ← Fix F
 
@@ -295,7 +296,7 @@ All steps 1–8 are done and committed. Step 9 (HTF gate) was implemented and th
 - Wick penetration + pin-bar shape + body return all checked on same `sweep_candle` (Bug D fix)
 - Body dominance check removed from sweep candle (Bug C fix — sweeps show REJECTION, not body)
 - ATR-adaptive gates: wick, leg size, displacement all scale with ATR(14)
-- Displacement check: ≥1 body-dominant reversal candle within 20 bars of sweep
+- Displacement check: ≥1 body-dominant reversal candle within 30 bars of sweep ← Fix I (was 20)
 - Setup invalidation on re-sweep (within 5pt clears old setup)
 - 5-min sweep cooldown per level
 - 90-min cap on leg lookback for FVG collection
@@ -336,6 +337,8 @@ All steps 1–8 are done and committed. Step 9 (HTF gate) was implemented and th
 | 8 | IFVG open-in-zone check + DOL tier sorting | ✅ Done |
 | E | EQH/EQL transitive grouping (sort-then-chain) | ✅ Done |
 | F | EQH/EQL tolerance 0.25pt → 1.0pt | ✅ Done |
+| H | IFVG age gate: flat 10min → TF-relative (tf × 8) | ✅ Done |
+| I | Displacement window: 20 bars → 30 bars | ✅ Done |
 | 9 | HTF alignment gate | ⚠️ DISABLED — see below |
 
 ---
@@ -362,21 +365,25 @@ Added `LTF_FVG_MIN_SIZE = {1:2.0, 2:2.5, 3:3.0, 4:3.5, 5:4.0}` to FVGTracker ini
 
 Previously (with bugs A-D): Q1 2023 = 44 signals, 43% WR, -1.83R net.
 
-**January 2023 (verified 2026-05-04):** 10 signals | 3W/4L/3BE | 30% WR | -1R net
-- All within killzones, all sweeping S/A/B-tier levels
-- Jan 19 had 2 consecutive LONG losses (same day, different sessions)
-- Jan 30 had 2 signals (WIN + BE same day)
+**January 2023 (with fixes H+I, 2026-05-04):** 11 signals | 3W/5L/3BE | 27% WR | -2R net
+- Added 1 new signal (Jan-10 14:46 SHORT) from the TF-relative age gate fix — that signal lost
 
-**User target: 1-5 trades per day** (5-25 per week). January averages ~0.45/day — below target. Feb/March not yet run post-fixes. Expected total Q1 ~25-30 signals after removing false signals.
+**June 2023 2-week (2023-06-05 to 2023-06-16):** 1 signal | 0W/1L/0BE | 0% WR | -1R
+- Sweep-only mode showed 23 sweeps → only 1 IFVG signal (4% conversion)
+- Strong AI bull trend market: manipulation legs were small, FVGs didn't pass 2pt strong-close gate
+- This is the primary open problem
+
+**User target: 1-5 trades per day** (5-25 per week). Current: ~0.1-0.5/day — far below target.
 
 ---
 
-### Signal count investigation — RESOLVED:
+### Signal count investigation — OPEN:
 
-January 2023: confirmed 10 signals (was 20 pre-fix). Drop is expected — fixes removed false signals.
-Earlier readings of 3 signals were DB concurrency bugs (reading mid-write).
+The 23-sweep → 1-IFVG finding in June 2023 shows the IFVG chain is too strict for trending markets.
+Specific filter causing most rejections is unknown — need debug rejection counters.
+Prime suspect: `_ifvg_close_is_strong` (2pt gate) combined with small manipulation-leg FVGs in trends.
 
-Feb/March 2023 not yet run post-fixes. Do a short 2-week window before expanding.
+Potential fix: add debug counters to `_try_model1` to see rejections at each gate.
 
 ---
 
@@ -390,14 +397,35 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 
 ### NEXT STEP (do this first when resuming):
 
-1. **Run a fresh 2-week backtest** on random dates (not Jan 2023 — use something like 2023-06-05 to 2023-06-16 or 2023-09-11 to 2023-09-22). Use `db_path=Path('C:/tmp/bt_XXXX.db'), clear_db=True`.
-2. **Run `generate_screenshots.py`** after copying the DB to `data/journal.db` — uploads charts to Discord for visual review.
-3. **Visually review trades in Discord** — are the sweeps real? Are the FVG inversions clean?
-4. **Next quality improvement**: implement proper daily-bias HTF filter (Step 9 with correct ICT logic):
-   - Look at daily candle direction: `d_close > d_open` → bullish day → prefer longs
-   - Premium/discount: price above midpoint of last 5 daily range → premium → prefer shorts
-   - Apply as a SOFT filter (prefer one direction but don't block the other), not a hard block
-5. **Also consider**: tightening EQH/EQL detection on 1m (for the manipulation leg pivot detection, not the 15m levels). The bot uses swing_ltf (left=20, right=5) for manipulation leg detection — verify this is picking up proper ICT structural swings.
+1. **Add IFVG rejection debug counters** to `_try_model1` in `confluence.py`. Count rejections at each gate:
+   - displacement failed
+   - no FVG on leg
+   - ifvg_detector returned None (age gate? speed gate? no inversion?)
+   - body_dominance failed
+   - strong_close failed
+   - rr < min_rr
+   Re-run Jun 2023 with debug mode and see which gate rejects the most setups.
+
+2. **If strong_close (2pt) is the culprit**: test 1pt threshold and compare signal count/quality.
+
+3. **Generate screenshots** of Jun 2023's 1 existing trade:
+   ```
+   copy C:\tmp\bt_jun23.db data\journal.db
+   python generate_screenshots.py
+   ```
+
+4. **After debug investigation**, implement daily-bias HTF gate (Step 9 correct ICT version):
+   - Daily candle direction: `d_close > d_open` → bullish bias → weight longs
+   - Premium/discount: price above midpoint of last 5 daily range → premium → weight shorts
+   - Soft filter (weight/score adjustment), not hard block
+
+5. **Python SMC libraries found** (for cross-reference):
+   - `pip install smartmoneyconcepts` (joshyattridge) — FVG, order blocks, swing H/L
+   - `vlex05/SMC-Algo-Trading` — bot framework
+   - Check their FVG detection logic against ours for any differences
+
+6. **Notion progress page**: needs NOTION_TOKEN added to Windows user env variables.
+   Run `create_notion_progress.py` after setting the token.
 
 ---
 
@@ -425,9 +453,11 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 
 ## Known Issues / TODO
 
-1. **Signal count** — currently ~5-15/month in Jan 2023 post-fixes. Target is 1-5/day. Active investigation (see NEXT STEP above).
-2. **HTF alignment gate** — disabled; needs daily-bias implementation. Do NOT re-enable the momentum version.
-3. **SMT temporal proximity** — checked: `smt.py` already has 4-bar proximity window. Not a current issue.
+1. **Signal frequency** — 0.1-0.5/day vs target 1-5/day. Root cause: IFVG chain converts only 4% of sweeps in strong-trend markets. 2pt strong-close gate is prime suspect. Need rejection counters.
+2. **HTF alignment gate** — disabled; needs daily-bias implementation. Do NOT re-enable the 4H momentum version.
+3. **NOTION_TOKEN** — not in Windows user env. Add to HKCU\Environment to use Notion sync.
+4. **/grill-me skill** — added to `C:\Users\yotda\.claude\commands\grill-me.md`. Type `/grill-me` to use.
+5. **create_notion_progress.py** — in repo root, creates Notion progress dashboard. Needs NOTION_TOKEN.
 4. **CISD reference** — uses most recent opposing candle, not structural swing. Model 2 is disabled; low priority.
 5. **HTF FVG drawing coords** — screenshots don't draw the HTF FVG zone box when the swept level was an FVG edge. The data is in `level.kind` (`60m_fvg_high`, etc.) but `fvg_top/bottom` coords for the zone aren't stored.
 6. **Daily bias filter** — proper ICT premium/discount approach not yet implemented (Step 9 placeholder).
