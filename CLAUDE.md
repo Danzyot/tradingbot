@@ -166,7 +166,7 @@ Run command: `python run_backtest.py` from repo root.
 
 **Validation workflow:**
 - Test 1 week at a time (date_from / date_to)
-- Sync to Notion: `python setup_notion.py`
+- Sync to Notion: `python scripts/setup_notion.py`
 - Claude captures screenshots for each trade (TradingView MCP)
 - Manually review each trade in Notion
 - Expand date range once model confirmed correct
@@ -215,7 +215,7 @@ Flow per trade:
    → uploads to Discord CDN → marks DB → adds image block to Notion page
 
 ### Screenshot workflow (actual — replaces TradingView MCP approach)
-Run `python generate_screenshots.py` — generates candlestick charts from nq_1m.csv data (mplfinance),
+Run `python scripts/generate_screenshots.py` — generates candlestick charts from nq_1m.csv data (mplfinance),
 uploads to Discord, embeds in Notion. Reads DISCORD_WEBHOOK_URL from Windows user env.
 Shows: entry/SL/TP1 lines, IFVG gray zone, $ sweep marker, SMT orange line, trade title.
 
@@ -224,7 +224,7 @@ Known TradingView MCP issues:
 - `chart_scroll_to_date` fails with "evaluate is not defined"
 - `chart_set_visible_range` ignores timestamps — stays at current time
 - `scrollTimeTo` (JS) does not navigate to historical dates 3+ years back
-- TradingView Desktop cannot navigate to Jan 2023 via any MCP method — use generate_screenshots.py instead
+- TradingView Desktop cannot navigate to Jan 2023 via any MCP method — use scripts/generate_screenshots.py instead
 
 ### Credentials (set as env vars)
 ```
@@ -234,7 +234,7 @@ NOTION_DATABASE_ID=33d537bf-3f5e-813b-b106-df8097f2d315
 DATABENTO_API_KEY=db-...  (regenerate — was exposed in chat)
 ```
 
-`setup_notion.py` has hardcoded token + DB ID as fallback.
+`scripts/setup_notion.py` reads token from env (NOTION_TOKEN required).
 
 ### Notion Database Properties
 Name, Date, Symbol, Direction, Model, Session, Entry, Stop Loss, TP1, TP2, R:R, Score,
@@ -280,12 +280,12 @@ All steps 1–8 done. Fixes E/F/H/I applied. Step 9 (HTF gate) disabled (wrong l
 - Fixed circular import in `cisd.py` (was broken: TYPE_CHECKING guard removed by mistake)
 - `confluence.py`: retroactive leg extreme — at IFVG fire time, rescan from `leg_start_ts` to current candle (not capped at `sweep.ts`). SL now at TRUE leg extreme wick.
 - `confluence.py`: `_last_quality_sweeps` list populated after each `update()` call (sweeps passing wick+leg gates, before IFVG)
-- `run_legs_scan.py`: scans all quality sweeps + 5m swing points → `data/legs_scan.json`
-- `visualize_legs.py`: generates per-day 5m candlestick charts with swing markers (▲▼), shaded manipulation legs, swept level lines, leg extreme × markers
+- `scripts/run_legs_scan.py`: scans all quality sweeps + 5m swing points → `data/legs_scan.json`
+- `scripts/visualize_legs.py`: generates per-day 5m candlestick charts with swing markers (▲▼), shaded manipulation legs, swept level lines, leg extreme × markers
 - Jan 2023 backtest with retroactive fix: **13 signals | 4W/5L/4BE | 31% WR | -1R** (was 11/3W/5L/3BE/-2R)
 
 **Session 3 changes (2026-05-04):**
-- `generate_leg_screenshots.py`: per-sweep zoomed charts (one per quality sweep). 3m candles, window = leg_start-10min to sweep+30min. Shows: full manipulation leg as colored background (axvspan), swept level dashed line, leg extreme dash-dot line + X marker, swing highs/lows ▲▼ from same day, vertical SWEEP marker. NO entry/SL/TP anywhere.
+- `scripts/generate_leg_screenshots.py`: per-sweep zoomed charts (one per quality sweep). 3m candles, window = leg_start-10min to sweep+30min. Shows: full manipulation leg as colored background (axvspan), swept level dashed line, leg extreme dash-dot line + X marker, swing highs/lows ▲▼ from same day, vertical SWEEP marker. NO entry/SL/TP anywhere.
 - Uploaded all 127 Jan 2023 quality sweep charts to Discord (all successful)
 
 ---
@@ -418,7 +418,7 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
    - Manipulation legs (blue/orange shading) cover the right candle range
    - Leg extreme (gold dash-dot line + X) aligns with the actual wick tip
    - Swept level dashed line is at the right price
-   If swings look wrong, adjust `SWING_VIZ_LEFT/RIGHT` params in `run_legs_scan.py` and regenerate.
+   If swings look wrong, adjust `SWING_VIZ_LEFT/RIGHT` params in `scripts/run_legs_scan.py` and regenerate.
 
 2. **Add IFVG rejection debug counters** to `_try_model1` in `confluence.py`. Count rejections at each gate:
    - displacement failed
@@ -437,7 +437,7 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
    - Soft filter (weight/score adjustment), not hard block
 
 5. **Notion progress page**: needs NOTION_TOKEN added to Windows user env variables.
-   Run `create_notion_progress.py` after setting the token.
+   Run `python scripts/create_notion_progress.py` after setting the token.
 
 ---
 
@@ -469,13 +469,13 @@ run_backtest(..., db_path=Path('C:/tmp/bt_NAME.db'), clear_db=True)
 2. **HTF alignment gate** — disabled; needs daily-bias implementation. Do NOT re-enable the 4H momentum version.
 3. **NOTION_TOKEN** — not in Windows user env. Add to HKCU\Environment to use Notion sync.
 4. **/grill-me skill** — added to `C:\Users\yotda\.claude\commands\grill-me.md`. Type `/grill-me` to use.
-5. **create_notion_progress.py** — in repo root, creates Notion progress dashboard. Needs NOTION_TOKEN.
+5. **scripts/create_notion_progress.py** — creates Notion progress dashboard. Needs NOTION_TOKEN.
 4. **CISD reference** — uses most recent opposing candle, not structural swing. Model 2 is disabled; low priority.
 5. **HTF FVG drawing coords** — screenshots don't draw the HTF FVG zone box when the swept level was an FVG edge. The data is in `level.kind` (`60m_fvg_high`, etc.) but `fvg_top/bottom` coords for the zone aren't stored.
 6. **Daily bias filter** — proper ICT premium/discount approach not yet implemented (Step 9 placeholder).
 7. **Live data loop** — not built yet. Future phase.
 8. **C-tier order blocks** — not yet implemented.
-9. **TradingView MCP** — can't navigate to Jan 2023 (3yr+ ago). Use `generate_screenshots.py` instead.
+9. **TradingView MCP** — can't navigate to Jan 2023 (3yr+ ago). Use `scripts/generate_screenshots.py` instead.
 
 ---
 
